@@ -102,7 +102,11 @@ def submit(
     tasks = _read_tasks(file)
     queue = SqsQueue.by_name(spec.queue_name)
     envelopes = (
-        Envelope(task=t, connector=spec.name, idempotency_key=idempotency_key(spec.name, t.id, t.version))
+        Envelope(
+            task=t,
+            connector=spec.name,
+            idempotency_key=idempotency_key(spec.name, t.id, t.version),
+        )
         for _ in range(repeat)
         for t in tasks
     )
@@ -142,7 +146,12 @@ def worker(
         signal.signal(sig, lambda *_: stop.set())
     w = Worker(spec, adapter, store, queue)
     try:
-        w.run(stop=stop, max_messages=max_messages, idle_polls=idle_polls, wait_seconds=wait_seconds)
+        w.run(
+            stop=stop,
+            max_messages=max_messages,
+            idle_polls=idle_polls,
+            wait_seconds=wait_seconds,
+        )
     finally:
         adapter.close()
     typer.echo(json.dumps({"connector": spec.name, **w.summary()}))

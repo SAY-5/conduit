@@ -6,13 +6,10 @@ import random
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import TypeVar
 
 import httpx
 
 from conduit.config import RetryPolicy
-
-T = TypeVar("T")
 
 
 class DeliveryError(Exception):
@@ -91,7 +88,7 @@ class RetryOutcome:
     delays: list[float] = field(default_factory=list)
 
 
-def retry_call(
+def retry_call[T](
     fn: Callable[[], T],
     policy: RetryPolicy,
     *,

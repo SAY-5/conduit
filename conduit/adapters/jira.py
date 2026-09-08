@@ -80,7 +80,10 @@ class JiraAdapter(Adapter):
                 self.raise_for_status(response)
         if not key:
             response = self._client.post(
-                f"{self.api_base}/issue", json={"fields": fields}, headers=headers, auth=self._auth()
+                f"{self.api_base}/issue",
+                json={"fields": fields},
+                headers=headers,
+                auth=self._auth(),
             )
             self.raise_for_status(response)
             key = response.json().get("key")
