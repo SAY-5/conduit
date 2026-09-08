@@ -20,6 +20,10 @@ from conduit.models import DeliveryResult, DeliveryStatus
 
 log = structlog.get_logger()
 
+# A duplicate that arrives while another worker still holds the claim is re-polled
+# after this many seconds instead of the queue's full visibility timeout.
+IN_PROGRESS_RECHECK_SECONDS = 10
+
 
 @dataclass
 class WorkerStats:
@@ -110,7 +114,8 @@ class Worker:
                     remote_id=claim.remote_id,
                     detail="idempotency key already delivered",
                 )
-            logger.info("delivery.in_progress_elsewhere")
+            self.queue.extend_visibility(message.receipt_handle, IN_PROGRESS_RECHECK_SECONDS)
+            logger.info("delivery.in_progress_elsewhere", recheck=IN_PROGRESS_RECHECK_SECONDS)
             return None
 
         remote_id = self.store.latest(name, task.id) if task.version > 1 else None

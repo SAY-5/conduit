@@ -61,3 +61,6 @@ filterwarnings = [
     "ignore::DeprecationWarning:fastapi.*",
     "ignore:Using .httpx. with .starlette.testclient.*",
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"demo/run.py" = ["E501"]
