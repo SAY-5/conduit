@@ -9,6 +9,7 @@ import os
 import signal
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Annotated
 
@@ -70,6 +71,18 @@ def _spec(connectors_dir: Path, name: str) -> ConnectorSpec:
     return specs[name]
 
 
+def _queue_with_wait(name: str, wait_seconds: int) -> SqsQueue:
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            return SqsQueue.by_name(name)
+        except Exception as exc:
+            if time.monotonic() >= deadline:
+                typer.echo(f"queue {name} not available: {exc}", err=True)
+                raise typer.Exit(1) from exc
+            time.sleep(2)
+
+
 def _read_tasks(path: Path) -> list[Task]:
     if path.suffix == ".csv":
         with path.open(newline="") as fh:
@@ -124,6 +137,9 @@ def worker(
     idle_polls: Annotated[int | None, typer.Option(help="Exit after N empty polls")] = None,
     wait_seconds: Annotated[int, typer.Option(help="SQS long poll wait")] = 20,
     json_logs: Annotated[bool, typer.Option(envvar="CONDUIT_JSON_LOGS")] = False,
+    wait_for_queue: Annotated[
+        int, typer.Option(help="Seconds to wait for the queue to exist (Terraform may lag)")
+    ] = 0,
 ) -> None:
     """Consume the connector queue and deliver through its adapter."""
     from conduit import metrics
@@ -138,7 +154,7 @@ def worker(
     store = DynamoIdempotencyStore(
         table, ttl_seconds=spec.idempotency_ttl_seconds, client=aws_client("dynamodb")
     )
-    queue = SqsQueue.by_name(spec.queue_name)
+    queue = _queue_with_wait(spec.queue_name, wait_for_queue)
     if metrics_port > 0:
         metrics.serve(metrics_port)
     stop = threading.Event()

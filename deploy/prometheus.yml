@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: conduit-workers
+    static_configs:
+      - targets:
+          - worker-slack-ops:9100
+          - worker-jira-support:9100
+          - worker-webhook-crm:9100

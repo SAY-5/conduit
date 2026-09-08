@@ -1,0 +1,113 @@
+name: conduit
+
+x-worker: &worker
+  build:
+    context: ..
+    dockerfile: Dockerfile
+  image: conduit:local
+  restart: unless-stopped
+  environment: &worker-env
+    AWS_DEFAULT_REGION: us-east-1
+    AWS_ACCESS_KEY_ID: test
+    AWS_SECRET_ACCESS_KEY: test
+    CONDUIT_AWS_ENDPOINT_URL: http://localstack:4566
+    CONDUIT_TABLE: conduit-idempotency
+    CONDUIT_JSON_LOGS: "1"
+    SLACK_BASE_URL: http://fake-slack:8000
+    JIRA_BASE_URL: http://fake-jira:8000
+    CRM_WEBHOOK_URL: http://fake-webhook:8000/hook
+    SLACK_BOT_TOKEN: xoxb-demo-token
+    JIRA_EMAIL: bot@example.com
+    JIRA_API_TOKEN: demo-jira-token
+    CRM_WEBHOOK_SECRET: whsec-demo
+  depends_on:
+    localstack:
+      condition: service_healthy
+
+x-fake: &fake
+  build:
+    context: ..
+    dockerfile: Dockerfile
+  image: conduit:local
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD", "curl", "-fsS", "http://localhost:8000/_health"]
+    interval: 2s
+    timeout: 2s
+    retries: 30
+
+services:
+  localstack:
+    image: localstack/localstack:3.8
+    ports:
+      - "4566:4566"
+    environment:
+      SERVICES: sqs,dynamodb,iam,ssm,sts
+      EAGER_SERVICE_LOADING: "1"
+      SQS_ENDPOINT_STRATEGY: path
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:4566/_localstack/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+
+  fake-slack:
+    <<: *fake
+    command: ["uvicorn", "fakes.slack:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8001:8000"
+
+  fake-jira:
+    <<: *fake
+    command: ["uvicorn", "fakes.jira:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8002:8000"
+
+  fake-webhook:
+    <<: *fake
+    command: ["uvicorn", "fakes.webhook:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      FAKE_WEBHOOK_SECRET: whsec-demo
+    ports:
+      - "8003:8000"
+
+  worker-slack-ops:
+    <<: *worker
+    command: ["conduit", "worker", "--connector", "slack-ops", "--wait-for-queue", "180"]
+    ports:
+      - "9101:9100"
+    depends_on:
+      localstack:
+        condition: service_healthy
+      fake-slack:
+        condition: service_healthy
+
+  worker-jira-support:
+    <<: *worker
+    command: ["conduit", "worker", "--connector", "jira-support", "--wait-for-queue", "180"]
+    ports:
+      - "9102:9100"
+    depends_on:
+      localstack:
+        condition: service_healthy
+      fake-jira:
+        condition: service_healthy
+
+  worker-webhook-crm:
+    <<: *worker
+    command: ["conduit", "worker", "--connector", "webhook-crm", "--wait-for-queue", "180"]
+    ports:
+      - "9103:9100"
+    depends_on:
+      localstack:
+        condition: service_healthy
+      fake-webhook:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    profiles: ["metrics"]
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
