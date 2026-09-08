@@ -1,0 +1,23 @@
+.dlq-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 1.4rem; margin-top: 2.6rem; align-items: start; }
+.dlq-panel { padding: 1.3rem 1.4rem; display: flex; flex-direction: column; gap: 1rem; }
+.dlq-side { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+.dlq-cli { font-size: 0.82rem; color: var(--ivory); }
+.dlq-meters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.8rem; }
+.meter { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 0.8rem 0.9rem; background: rgba(5, 10, 9, 0.5); display: flex; flex-direction: column; gap: 0.4rem; transition: border-color 0.4s, box-shadow 0.4s; }
+.meter strong { font-size: 2.2rem; font-weight: 600; line-height: 1; color: var(--ivory); }
+.meter-bar { height: 8px; border-radius: 999px; background: rgba(236, 233, 220, 0.06); overflow: hidden; }
+.meter-bar span { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #ff6b5e, #ffb3aa); box-shadow: 0 0 12px rgba(231, 105, 93, 0.6); }
+.meter-inbox .meter-bar span { background: linear-gradient(90deg, var(--teal), var(--teal-2)); box-shadow: 0 0 12px var(--teal-glow); }
+.meter-hot { border-color: rgba(231, 105, 93, 0.55); box-shadow: 0 0 40px -14px rgba(231, 105, 93, 0.7); }
+.meter-hot strong { color: #ff8f84; }
+.meter .hot { color: #ff8f84; }
+.meter .ok { color: var(--teal-2); }
+.meter .small { font-size: 0.66rem; }
+.dlq-hint { font-size: 0.86rem; color: var(--ivory-2); min-height: 2.6em; }
+.dlq-table td { font-size: 0.76rem; }
+.inbox-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.74rem; max-height: 300px; overflow-y: auto; }
+.inbox-list li { display: grid; grid-template-columns: 1fr auto auto; gap: 0.6rem; align-items: center; padding: 0.35rem 0.6rem; border-radius: 6px; border: 1px solid var(--line); background: rgba(5, 10, 9, 0.5); }
+@media (max-width: 900px) {
+  .dlq-grid { grid-template-columns: 1fr; }
+  .dlq-meters { grid-template-columns: 1fr; }
+}
