@@ -248,3 +248,26 @@ button, input, textarea, select { font: inherit; color: inherit; }
   .log-line { grid-template-columns: 4.2rem 1fr; }
   .log-line .t { display: none; }
 }
+
+/* Code wrap and labels */
+.code-wrap { position: relative; display: flex; flex-direction: column; gap: 0.4rem; min-width: 0; }
+.code-label, .log-wrap .code-label {
+  font-family: var(--font-mono); font-size: 0.68rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ivory-3);
+}
+.log-wrap { display: flex; flex-direction: column; gap: 0.4rem; min-width: 0; }
+.log { background: rgba(5, 10, 9, 0.7); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 0.6rem; }
+
+/* Nav */
+.nav {
+  position: sticky; top: 0.75rem; z-index: 50;
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  padding: 0.55rem 0.6rem 0.55rem 1rem; margin-top: 0.75rem;
+  border-radius: 999px;
+}
+.nav-brand { display: flex; align-items: center; gap: 0.6rem; font-family: var(--font-display); font-weight: 600; letter-spacing: -0.01em; }
+.nav-brand svg { width: 22px; height: 22px; }
+.nav-links { display: flex; gap: 0.2rem; }
+.nav-links a { color: var(--ivory-2); font-size: 0.86rem; padding: 0.45rem 0.8rem; border-radius: 999px; }
+.nav-links a:hover { color: var(--ivory); background: rgba(236, 233, 220, 0.06); text-decoration: none; }
+.nav-repo { font-family: var(--font-mono); font-size: 0.74rem; }
+@media (max-width: 860px) { .nav-links { display: none; } }
