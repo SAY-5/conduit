@@ -199,8 +199,11 @@ def drain(queue: SqsQueue, *, visibility: int = 30, limit: int | None = None) ->
 
 
 def list_dead_letters(dlq: SqsQueue, limit: int | None = None) -> list[Message]:
-    """Peek at dead letters without consuming them (visibility resets after a few seconds)."""
-    return list(drain(dlq, visibility=5, limit=limit))
+    """Peek at dead letters without consuming them; visibility is handed back immediately."""
+    messages = list(drain(dlq, visibility=30, limit=limit))
+    for message in messages:
+        dlq.extend_visibility(message.receipt_handle, 0)
+    return messages
 
 
 def replay_dead_letters(dlq: SqsQueue, target: SqsQueue, limit: int | None = None) -> int:
