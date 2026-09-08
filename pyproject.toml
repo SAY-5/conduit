@@ -1,0 +1,58 @@
+[project]
+name = "conduit"
+version = "0.1.0"
+description = "Reusable integration connector kit: one adapter interface for Slack, Jira, and webhooks with idempotency keys, backoff retries, an SQS dead-letter queue, and Terraform so a new integration ships from one config file"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "SAY-5", email = "say.apm35@gmail.com" }]
+dependencies = [
+    "pydantic>=2.7",
+    "boto3>=1.34",
+    "httpx>=0.27",
+    "structlog>=24.1",
+    "pyyaml>=6.0",
+    "typer>=0.12",
+    "prometheus-client>=0.20",
+]
+
+[project.optional-dependencies]
+fakes = ["fastapi>=0.111", "uvicorn>=0.29"]
+
+[project.scripts]
+conduit = "conduit.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "pytest-cov>=5.0",
+    "respx>=0.21",
+    "moto[dynamodb]>=5.0",
+    "ruff>=0.5",
+    "fastapi>=0.111",
+    "uvicorn>=0.29",
+    "httpx>=0.27",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["conduit"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["conduit", "fakes", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: requires LocalStack (set CONDUIT_LOCALSTACK_URL) and the fakes",
+    "terraform: requires the terraform binary and LocalStack",
+]
+addopts = "-q"
