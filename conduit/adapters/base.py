@@ -34,7 +34,10 @@ class Adapter(abc.ABC):
         self._client = client or httpx.Client(timeout=spec.retry.timeout_seconds)
 
     @abc.abstractmethod
-    def deliver(self, task: Task, idempotency_key: str) -> DeliveryResult: ...
+    def deliver(
+        self, task: Task, idempotency_key: str, remote_id: str | None = None
+    ) -> DeliveryResult:
+        """Deliver ``task``; ``remote_id`` is the id recorded for its previous revision."""
 
     @abc.abstractmethod
     def healthcheck(self) -> bool: ...

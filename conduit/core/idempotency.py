@@ -27,6 +27,10 @@ def idempotency_key(connector: str, task_id: str, task_version: int) -> str:
     return hashlib.sha256(material).hexdigest()
 
 
+def latest_pk(connector: str, task_id: str) -> str:
+    return f"latest|{connector}|{task_id}"
+
+
 class ClaimState(StrEnum):
     IN_PROGRESS = "in_progress"
     DELIVERED = "delivered"
@@ -47,6 +51,7 @@ class IdempotencyStore(Protocol):
     def claim(self, key: str, *, connector: str, task_id: str) -> ClaimResult: ...
     def mark_delivered(self, key: str, remote_id: str | None) -> None: ...
     def release(self, key: str) -> None: ...
+    def latest(self, connector: str, task_id: str) -> str | None: ...
 
 
 class DynamoIdempotencyStore:
@@ -116,6 +121,30 @@ class DynamoIdempotencyStore:
             ExpressionAttributeNames={"#s": "state"},
             ExpressionAttributeValues=values,
         )
+        if remote_id:
+            item = self._client.get_item(
+                TableName=self.table_name, Key={"pk": {"S": key}}, ConsistentRead=True
+            ).get("Item", {})
+            connector = item.get("connector", {}).get("S")
+            task_id = item.get("task_id", {}).get("S")
+            if connector and task_id:
+                self._client.put_item(
+                    TableName=self.table_name,
+                    Item={
+                        "pk": {"S": latest_pk(connector, task_id)},
+                        "remote_id": {"S": remote_id},
+                        "updated_at": {"N": str(now)},
+                        "expires_at": {"N": str(now + self.ttl_seconds)},
+                    },
+                )
+
+    def latest(self, connector: str, task_id: str) -> str | None:
+        item = self._client.get_item(
+            TableName=self.table_name,
+            Key={"pk": {"S": latest_pk(connector, task_id)}},
+            ConsistentRead=True,
+        ).get("Item")
+        return item.get("remote_id", {}).get("S") if item else None
 
     def release(self, key: str) -> None:
         """Drop an in-progress claim so a redrive or replay can deliver."""
@@ -157,6 +186,7 @@ class MemoryIdempotencyStore:
 
     def __init__(self, clock=time.time, lease_seconds: int = 120) -> None:
         self._items: dict[str, dict[str, Any]] = {}
+        self._latest: dict[tuple[str, str], str] = {}
         self._clock = clock
         self.lease_seconds = lease_seconds
 
@@ -176,8 +206,14 @@ class MemoryIdempotencyStore:
         return ClaimResult(True, ClaimState.IN_PROGRESS)
 
     def mark_delivered(self, key: str, remote_id: str | None) -> None:
-        self._items[key].update(state=ClaimState.DELIVERED, remote_id=remote_id)
+        item = self._items[key]
+        item.update(state=ClaimState.DELIVERED, remote_id=remote_id)
+        if remote_id:
+            self._latest[(item["connector"], item["task_id"])] = remote_id
 
     def release(self, key: str) -> None:
         if self._items.get(key, {}).get("state") == ClaimState.IN_PROGRESS:
             del self._items[key]
+
+    def latest(self, connector: str, task_id: str) -> str | None:
+        return self._latest.get((connector, task_id))
