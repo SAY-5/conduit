@@ -10,12 +10,15 @@ from dataclasses import dataclass
 from typing import Any
 
 import boto3
+import structlog
 from botocore.exceptions import ClientError
+from pydantic import ValidationError
 
 from conduit.config import ConnectorSpec
 from conduit.models import Envelope
 
 BATCH = 10
+log = structlog.get_logger()
 
 
 def aws_client(service: str, **kwargs: Any):
@@ -31,6 +34,14 @@ class Message:
     message_id: str
     envelope: Envelope
     receive_count: int
+
+
+class MessageBatch(list[Message]):
+    """Valid envelopes plus the receive count before filtering malformed bodies."""
+
+    def __init__(self, received_count: int) -> None:
+        super().__init__()
+        self.received_count = received_count
 
 
 class SqsQueue:
@@ -98,7 +109,7 @@ class SqsQueue:
 
     def receive(
         self, *, max_messages: int = BATCH, wait_seconds: int = 20, visibility: int | None = None
-    ) -> list[Message]:
+    ) -> MessageBatch:
         params: dict[str, Any] = {
             "QueueUrl": self.queue_url,
             "MaxNumberOfMessages": max(1, min(BATCH, max_messages)),
@@ -110,13 +121,26 @@ class SqsQueue:
             params["VisibilityTimeout"] = visibility
         self._called("receive_message")
         response = self._client.receive_message(**params)
-        messages = []
-        for raw in response.get("Messages", []):
+        raw_messages = response.get("Messages", [])
+        messages = MessageBatch(received_count=len(raw_messages))
+        for raw in raw_messages:
+            try:
+                envelope = Envelope.model_validate_json(raw["Body"])
+            except ValidationError:
+                # Leave poison messages unacknowledged for the queue's redrive
+                # policy, but do not block valid messages in this response. The
+                # validation exception includes input data: never log it.
+                log.warning(
+                    "queue.invalid_message",
+                    queue=self.name,
+                    message_id=raw["MessageId"],
+                )
+                continue
             messages.append(
                 Message(
                     receipt_handle=raw["ReceiptHandle"],
                     message_id=raw["MessageId"],
-                    envelope=Envelope.model_validate_json(raw["Body"]),
+                    envelope=envelope,
                     receive_count=int(raw.get("Attributes", {}).get("ApproximateReceiveCount", 1)),
                 )
             )
@@ -213,7 +237,7 @@ def drain(queue: SqsQueue, *, visibility: int = 30, limit: int | None = None) ->
     seen = 0
     while limit is None or seen < limit:
         batch = queue.receive(max_messages=BATCH, wait_seconds=1, visibility=visibility)
-        if not batch:
+        if getattr(batch, "received_count", len(batch)) == 0:
             return
         for message in batch:
             yield message
