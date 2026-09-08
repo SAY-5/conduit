@@ -1,0 +1,22 @@
+# Create or update an issue in the SUP project for every task revision.
+type: jira
+target: SUP
+base_url: https://example.atlassian.net
+secrets:
+  email: JIRA_EMAIL
+  api_token: JIRA_API_TOKEN
+mapping:
+  summary: title
+  description: body
+  issuetype: "Task"
+  customfield_10042: id            # external task id field
+retry:
+  max_attempts: 4
+  base_seconds: 0.25
+  max_seconds: 8
+rate_limit:
+  requests_per_second: 10
+queue:
+  max_receive_count: 3
+  visibility_timeout_seconds: 45
+idempotency_ttl_seconds: 1209600

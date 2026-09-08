@@ -1,0 +1,21 @@
+# Signed JSON POST to the CRM ingest endpoint.
+type: webhook
+target: https://crm.example.com/hooks/conduit
+secrets:
+  signing_secret: CRM_WEBHOOK_SECRET
+mapping:
+  external_id: id
+  revision: version
+  name: title
+  notes: body
+  state: status
+  owner: assignee
+retry:
+  max_attempts: 3
+  base_seconds: 0.1
+  max_seconds: 2
+rate_limit:
+  requests_per_second: 50
+queue:
+  max_receive_count: 2
+  visibility_timeout_seconds: 20

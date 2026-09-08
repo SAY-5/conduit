@@ -1,0 +1,18 @@
+# Post every task to the #ops channel as a Block Kit message.
+type: slack
+target: "#ops"
+base_url: https://slack.com          # override to point at a fake in tests and the demo
+secrets:
+  token: SLACK_BOT_TOKEN
+mapping:
+  title: "[$priority] $title"
+  body: body
+retry:
+  max_attempts: 5
+  base_seconds: 0.2
+  max_seconds: 5
+rate_limit:
+  requests_per_second: 20
+queue:
+  max_receive_count: 3
+  visibility_timeout_seconds: 30
