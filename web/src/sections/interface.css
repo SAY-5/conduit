@@ -21,3 +21,4 @@
   .iface-grid { grid-template-columns: 1fr; }
   .spec-list > div { grid-template-columns: 1fr; gap: 0.2rem; }
 }
+.spec-card .code { max-height: 440px; overflow: auto; }

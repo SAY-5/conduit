@@ -1,5 +1,6 @@
 import { Hero } from "./sections/Hero";
 import { Interface } from "./sections/Interface";
+import { Reliability } from "./sections/Reliability";
 
 const REPO = "https://github.com/SAY-5/conduit";
 
@@ -36,6 +37,7 @@ export default function App() {
       <main>
         <Hero />
         <Interface />
+        <Reliability />
       </main>
     </div>
   );
