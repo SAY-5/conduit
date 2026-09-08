@@ -254,11 +254,13 @@ export function Hero() {
                     <div className="target-inbox">
                       <strong className="mono">{lane.inbox}</strong>
                       <span>in inbox</span>
+                      <div className="target-meta mono">
+                        <span>{lane.dedup} dedup</span>
+                        {lane.retried ? <span>{lane.retried} retries</span> : null}
+                      </div>
                     </div>
                     <div className="target-meta mono">
                       <span>{TARGET_LABEL[lane.name]}</span>
-                      <span>{lane.dedup} dedup</span>
-                      {lane.retried ? <span>{lane.retried} retries</span> : null}
                     </div>
                   </div>
                 </div>
