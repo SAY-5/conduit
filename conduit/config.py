@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import re
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -96,7 +98,35 @@ class ConfigError(ValueError):
     pass
 
 
-def load_spec(path: Path) -> ConnectorSpec:
+_ENV_PATTERN = re.compile(r"\$\{([A-Z][A-Z0-9_]*)(?::-([^}]*))?\}")
+
+
+def interpolate(value: Any, env: dict[str, str] | None = None) -> Any:
+    """Expand ``${VAR}`` and ``${VAR:-default}`` in string values, recursively.
+
+    Terraform reads the same YAML with ``yamldecode`` and never touches these
+    fields (``base_url`` and ``target``), so the literal stays harmless there.
+    """
+    env = os.environ if env is None else env
+
+    def _sub(match: re.Match[str]) -> str:
+        name, default = match.group(1), match.group(2)
+        if name in env:
+            return env[name]
+        if default is not None:
+            return default
+        raise ConfigError(f"environment variable {name} is referenced but not set")
+
+    if isinstance(value, str):
+        return _ENV_PATTERN.sub(_sub, value)
+    if isinstance(value, dict):
+        return {k: interpolate(v, env) for k, v in value.items()}
+    if isinstance(value, list):
+        return [interpolate(v, env) for v in value]
+    return value
+
+
+def load_spec(path: Path, env: dict[str, str] | None = None) -> ConnectorSpec:
     try:
         raw = yaml.safe_load(path.read_text())
     except yaml.YAMLError as exc:
@@ -104,16 +134,17 @@ def load_spec(path: Path) -> ConnectorSpec:
     if not isinstance(raw, dict):
         raise ConfigError(f"{path}: top level must be a mapping")
     raw.setdefault("name", path.stem)
+    raw = interpolate(raw, env)
     try:
         return ConnectorSpec.model_validate(raw)
     except ValueError as exc:
         raise ConfigError(f"{path}: {exc}") from exc
 
 
-def load_all(directory: Path) -> dict[str, ConnectorSpec]:
+def load_all(directory: Path, env: dict[str, str] | None = None) -> dict[str, ConnectorSpec]:
     specs: dict[str, ConnectorSpec] = {}
     for path in sorted(directory.glob("*.yaml")):
-        spec = load_spec(path)
+        spec = load_spec(path, env)
         if spec.name in specs:
             raise ConfigError(f"duplicate connector name {spec.name!r} in {path}")
         specs[spec.name] = spec

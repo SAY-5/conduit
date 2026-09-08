@@ -1,7 +1,7 @@
 # Create or update an issue in the SUP project for every task revision.
 type: jira
 target: SUP
-base_url: https://example.atlassian.net
+base_url: ${JIRA_BASE_URL:-https://example.atlassian.net}
 secrets:
   email: JIRA_EMAIL
   api_token: JIRA_API_TOKEN

@@ -1,6 +1,6 @@
 # Signed JSON POST to the CRM ingest endpoint.
 type: webhook
-target: https://crm.example.com/hooks/conduit
+target: ${CRM_WEBHOOK_URL:-https://crm.example.com/hooks/conduit}
 secrets:
   signing_secret: CRM_WEBHOOK_SECRET
 mapping:
