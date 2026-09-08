@@ -8,7 +8,7 @@ export AWS_DEFAULT_REGION ?= us-east-1
 export AWS_ACCESS_KEY_ID ?= test
 export AWS_SECRET_ACCESS_KEY ?= test
 
-.PHONY: setup lint format test test-unit test-integration tf-init tf-validate tf-plan tf-apply tf-destroy \
+.PHONY: setup lint format test test-unit test-integration tf-init tf-validate tf-plan tf-apply tf-destroy image \
         up down demo demo-down clean
 
 setup:            ## install the project and dev tools into .venv
@@ -62,3 +62,6 @@ demo-down: down
 
 clean: demo-down
 	rm -rf .venv .pytest_cache .ruff_cache terraform/.terraform
+
+image:            ## build the worker/fakes image
+	$(COMPOSE) build fake-slack

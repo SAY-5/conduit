@@ -44,7 +44,7 @@ services:
     environment:
       SERVICES: sqs,dynamodb,iam,ssm,sts
       EAGER_SERVICE_LOADING: "1"
-      SQS_ENDPOINT_STRATEGY: path
+      SQS_ENDPOINT_STRATEGY: standard
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:4566/_localstack/health"]
       interval: 3s
