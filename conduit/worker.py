@@ -102,7 +102,7 @@ class Worker:
                 self._pause_while_open([], stop)
                 continue
             batch = self.queue.receive(wait_seconds=wait_seconds)
-            if not batch:
+            if getattr(batch, "received_count", len(batch)) == 0:
                 idle += 1
                 if idle_polls is not None and idle >= idle_polls:
                     break

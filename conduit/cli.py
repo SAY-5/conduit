@@ -57,6 +57,7 @@ def _configure_logging(json_logs: bool) -> None:
             renderer,
         ],
         wrapper_class=structlog.make_filtering_bound_logger(getattr(logging, level, logging.INFO)),
+        logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
     )
 
 
@@ -199,6 +200,7 @@ def dlq_list(
     limit: int = 100,
 ) -> None:
     """Show dead letters (task id, receive count, key) without consuming them."""
+    _configure_logging(json_logs=False)
     spec = _spec(connectors_dir, connector)
     dlq = SqsQueue.by_name(spec.dlq_name)
     messages = list_dead_letters(dlq, limit=limit)
@@ -224,6 +226,7 @@ def dlq_replay(
     limit: int | None = None,
 ) -> None:
     """Move dead letters back onto the connector queue."""
+    _configure_logging(json_logs=False)
     spec = _spec(connectors_dir, connector)
     moved = replay_dead_letters(
         SqsQueue.by_name(spec.dlq_name), SqsQueue.by_name(spec.queue_name), limit=limit

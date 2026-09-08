@@ -83,6 +83,13 @@ acknowledged without delivery, logged with the field and reason, and counted in
 `conduit_rejected_total{reason}` instead of cycling through retries into the DLQ.
 `conduit submit` applies the same rules and refuses the offending tasks up front.
 
+Malformed queue envelopes are logged by message ID without their contents and left
+unacknowledged for the queue's configured dead-letter redrive policy. Other valid
+messages in the same response continue normally. If provided, `submitted_at` must
+include a timezone, for example `2026-09-08T12:00:00Z`. The typed DLQ CLI only lists
+and replays valid envelopes; inspect malformed bodies through SQS tooling and correct
+them before resubmitting.
+
 The worker reads the same file to build the adapter, retry policy, and rate limit. Terraform
 reads it to create the queue pair with the redrive policy, a least-privilege IAM policy and role,
 one SSM SecureString placeholder per secret, and a container definition. Adding a fourth
@@ -118,6 +125,10 @@ make demo-down
 
 Requirements: Python 3.12 with [uv](https://docs.astral.sh/uv/), Docker with Compose, Terraform
 1.5 or newer.
+
+The interactive web demo in `web/` uses Node.js 20.19+ or 22.12+ with Vite 7.
+From that directory, run `npm ci`, `npm run build`, and `npm run selfcheck`.
+CI runs the build and simulation self-check on Node.js 22.
 
 ## make demo
 
