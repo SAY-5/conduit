@@ -120,3 +120,5 @@
   .board-body { grid-template-columns: 170px 1fr; }
   .lane { grid-template-columns: minmax(150px, 1fr) minmax(60px, 90px) minmax(170px, 1.1fr); }
 }
+.hero-stats { grid-template-columns: repeat(4, minmax(0, auto)); }
+.hero-stats .stat-label { white-space: normal; }

@@ -187,7 +187,7 @@ export function Hero() {
               <dd className={`stat-value ${totalDlq > 0 ? "stat-bad" : "stat-ok"}`}><Counter value={totalDlq} /></dd>
             </div>
             <div className="stat">
-              <dt className="stat-label">resources per new YAML</dt>
+              <dt className="stat-label">resources per YAML</dt>
               <dd className="stat-value stat-teal"><Counter value={planCount} /></dd>
             </div>
           </motion.dl>
