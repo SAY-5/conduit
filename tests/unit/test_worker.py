@@ -5,8 +5,9 @@ from __future__ import annotations
 from collections import deque
 
 import pytest
+from conduit import metrics
 from conduit.adapters.base import Adapter
-from conduit.config import ConnectorSpec, QueueSpec, RetryPolicy
+from conduit.config import ConnectorSpec, FieldRule, QueueSpec, RetryPolicy
 from conduit.core.idempotency import MemoryIdempotencyStore, idempotency_key
 from conduit.core.queue import Message
 from conduit.core.retry import PermanentError, TransientError
@@ -180,6 +181,22 @@ def test_replayed_dead_letter_delivers_after_fix(spec):
     queue.send(replayed)
     stats = worker.run(idle_polls=1, wait_seconds=0)
     assert stats.delivered == 1 and len(adapter.calls) == 3
+
+
+def test_invalid_task_is_rejected_before_claim_and_acknowledged(spec):
+    rules = {"owner": FieldRule(source="assignee", required=True)}
+    spec = spec.model_copy(update={"mapping": rules})
+    worker, queue, adapter = make_worker(spec, {})
+    before = metrics.rejected.labels(spec.name, "required")._value.get()
+    queue.send(envelope(spec, "A"))
+    result = worker.handle(queue.receive()[0])
+    assert result.status == DeliveryStatus.REJECTED and "owner" in result.detail
+    assert adapter.calls == [] and len(queue.deleted) == 1 and queue.dlq == []
+    assert worker.stats.rejected == 1 and worker.summary()["rejected"] == 1
+    assert metrics.rejected.labels(spec.name, "required")._value.get() == before + 1
+    assert worker.store.claim(
+        envelope(spec, "A").idempotency_key, connector=spec.name, task_id="A"
+    ).acquired
 
 
 def test_in_progress_elsewhere_is_left_alone(spec):

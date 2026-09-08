@@ -5,7 +5,9 @@ base_url: ${SLACK_BASE_URL:-https://slack.com}   # the demo points this at a fak
 secrets:
   token: SLACK_BOT_TOKEN
 mapping:
-  title: "[$priority] $title"
+  title:
+    source: "[$priority] $title"
+    max_length: 150                # Slack header block limit
   body: body
 retry:
   max_attempts: 5

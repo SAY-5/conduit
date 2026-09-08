@@ -6,10 +6,17 @@ secrets:
   email: JIRA_EMAIL
   api_token: JIRA_API_TOKEN
 mapping:
-  summary: title
+  summary:
+    source: title
+    type: string
+    required: true
+    max_length: 255                # Jira's summary limit; longer titles are cut
   description: body
-  issuetype: "Task"
-  customfield_10042: id            # external task id field
+  issuetype:
+    default: Task                  # constant: no source, only a default
+  customfield_10042:
+    source: id                     # external task id field
+    required: true
 retry:
   max_attempts: 4
   base_seconds: 0.25

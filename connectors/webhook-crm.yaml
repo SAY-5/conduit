@@ -4,12 +4,24 @@ target: ${CRM_WEBHOOK_URL:-https://crm.example.com/hooks/conduit}
 secrets:
   signing_secret: CRM_WEBHOOK_SECRET
 mapping:
-  external_id: id
-  revision: version
-  name: title
+  external_id:
+    source: id
+    required: true
+  revision:
+    source: version
+    type: integer
+  name:
+    source: title
+    required: true
+    max_length: 200
+    truncate: false                # the CRM rejects long names, so do we, up front
   notes: body
-  state: status
-  owner: assignee
+  state:
+    source: status
+    enum: [open, in_progress, blocked, done, closed]
+  owner:
+    source: assignee
+    default: unassigned
 retry:
   max_attempts: 3
   base_seconds: 0.1
