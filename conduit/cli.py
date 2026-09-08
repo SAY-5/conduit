@@ -19,6 +19,7 @@ import typer
 from conduit.adapters import build_adapter
 from conduit.config import ConfigError, ConnectorSpec, load_all
 from conduit.core.idempotency import DynamoIdempotencyStore, idempotency_key
+from conduit.core.mapping import validate_task
 from conduit.core.queue import (
     SqsQueue,
     aws_client,
@@ -110,9 +111,22 @@ def submit(
     connectors_dir: ConnectorsDir = Path("connectors"),
     repeat: Annotated[int, typer.Option(help="Submit each task this many times")] = 1,
 ) -> None:
-    """Enqueue tasks for one connector; every task gets a deterministic idempotency key."""
+    """Enqueue tasks for one connector; every task gets a deterministic idempotency key.
+
+    Tasks that fail the connector's mapping rules are reported and left out; the
+    command exits 1 when any were rejected so a pipeline notices.
+    """
     spec = _spec(connectors_dir, connector)
     tasks = _read_tasks(file)
+    accepted = []
+    rejected = 0
+    for t in tasks:
+        problem = validate_task(spec, t)
+        if problem is None:
+            accepted.append(t)
+            continue
+        rejected += 1
+        typer.echo(f"rejected {t.id} v{t.version}: {problem} ({problem.reason})", err=True)
     queue = SqsQueue.by_name(spec.queue_name)
     envelopes = (
         Envelope(
@@ -121,10 +135,15 @@ def submit(
             idempotency_key=idempotency_key(spec.name, t.id, t.version),
         )
         for _ in range(repeat)
-        for t in tasks
+        for t in accepted
     )
     sent = queue.send_batch(envelopes)
-    typer.echo(f"submitted {sent} messages ({len(tasks)} tasks x {repeat}) to {spec.queue_name}")
+    typer.echo(
+        f"submitted {sent} messages ({len(accepted)} tasks x {repeat}) to {spec.queue_name}"
+        + (f", {rejected} rejected" if rejected else "")
+    )
+    if rejected:
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -224,7 +243,8 @@ def config_validate(connectors_dir: ConnectorsDir = Path("connectors")) -> None:
         typer.echo(
             f"ok  {spec.name:<16} {spec.type:<8} target={spec.target} "
             f"queue={spec.queue_name} dlq={spec.dlq_name} "
-            f"max_receive={spec.queue.max_receive_count} attempts={spec.retry.max_attempts}"
+            f"max_receive={spec.queue.max_receive_count} attempts={spec.retry.max_attempts} "
+            f"mapping={len(spec.mapping)}"
         )
 
 

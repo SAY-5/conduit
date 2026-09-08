@@ -14,6 +14,7 @@ from conduit import metrics
 from conduit.adapters.base import Adapter
 from conduit.config import ConnectorSpec
 from conduit.core.idempotency import IdempotencyStore
+from conduit.core.mapping import validate_task
 from conduit.core.queue import Message, SqsQueue
 from conduit.core.retry import DeliveryError, TransientError, retry_call
 from conduit.models import DeliveryResult, DeliveryStatus
@@ -30,6 +31,7 @@ class WorkerStats:
     received: int = 0
     delivered: int = 0
     deduplicated: int = 0
+    rejected: int = 0
     retried: int = 0
     failed: int = 0
     dead_lettered: int = 0
@@ -98,6 +100,22 @@ class Worker:
         lag = (datetime.now(UTC) - env.submitted_at).total_seconds()
         metrics.queue_lag.labels(name).observe(max(0.0, lag))
         logger = self._log.bind(task_id=task.id, version=task.version, key=key[:12])
+
+        problem = validate_task(self.spec, task)
+        if problem is not None:
+            self.queue.delete(message.receipt_handle)
+            self.stats.rejected += 1
+            metrics.rejected.labels(name, problem.reason).inc()
+            logger.warning(
+                "delivery.rejected", field=problem.field, reason=problem.reason, error=str(problem)
+            )
+            return DeliveryResult(
+                status=DeliveryStatus.REJECTED,
+                connector=name,
+                task_id=task.id,
+                idempotency_key=key,
+                detail=f"mapping {problem.reason}: {problem}",
+            )
 
         claim = self.store.claim(key, connector=name, task_id=task.id)
         if not claim.acquired:
@@ -193,6 +211,7 @@ class Worker:
             "received": s.received,
             "delivered": s.delivered,
             "deduplicated": s.deduplicated,
+            "rejected": s.rejected,
             "retried": s.retried,
             "failed": s.failed,
             "dead_lettered": s.dead_lettered,
