@@ -52,7 +52,7 @@ class Worker:
         self._clock = clock
         self.stats = WorkerStats()
         self._min_interval = 1.0 / spec.rate_limit.requests_per_second
-        self._last_send = 0.0
+        self._last_send: float | None = None
         self._log = log.bind(connector=spec.name, type=spec.type)
 
     def run(
@@ -114,6 +114,7 @@ class Worker:
             return None
 
         remote_id = self.store.latest(name, task.id) if task.version > 1 else None
+        self._throttle()
         started = self._clock()
 
         def on_retry(attempt: int, delay: float, err: TransientError) -> None:
@@ -125,7 +126,6 @@ class Worker:
             logger.warning("delivery.retry", attempt=attempt, delay=round(delay, 3), error=str(err))
 
         try:
-            self._throttle()
             result, outcome = retry_call(
                 lambda: self.adapter.deliver(task, key, remote_id=remote_id),
                 self.spec.retry,
@@ -176,10 +176,10 @@ class Worker:
         return result.model_copy(update={"attempts": outcome.attempts})
 
     def _throttle(self) -> None:
-        now = self._clock()
-        wait = self._min_interval - (now - self._last_send)
-        if wait > 0:
-            self._sleep(wait)
+        if self._last_send is not None:
+            wait = self._min_interval - (self._clock() - self._last_send)
+            if wait > 0:
+                self._sleep(wait)
         self._last_send = self._clock()
 
     def summary(self) -> dict[str, float | int]:
