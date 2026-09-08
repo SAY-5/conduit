@@ -281,3 +281,15 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .footer-list b { color: var(--ivory); font-weight: 500; }
 .footer-bottom { display: flex; justify-content: space-between; gap: 1rem; margin-top: 2.5rem; padding-top: 1.2rem; border-top: 1px solid var(--line); font-size: 0.72rem; color: var(--ivory-3); flex-wrap: wrap; }
 @media (max-width: 800px) { .footer-grid { grid-template-columns: 1fr; } }
+
+/* polish: single-line logs, non-wrapping segmented labels */
+.log-line { white-space: nowrap; overflow: hidden; }
+.log-line > span:last-child { overflow: hidden; text-overflow: ellipsis; }
+.seg { flex-wrap: wrap; }
+.seg button { white-space: nowrap; }
+.lab-actions .seg { max-width: 100%; }
+@media (max-width: 480px) {
+  .wrap { width: calc(100% - 1.5rem); }
+  .lab { padding: 1.1rem 1rem; }
+  .btn { padding: 0.62rem 0.95rem; font-size: 0.88rem; }
+}
