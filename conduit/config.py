@@ -62,7 +62,22 @@ class RetryPolicy(BaseModel):
 
 
 class RateLimit(BaseModel):
+    """Token bucket: ``requests_per_second`` refill, ``burst`` capacity.
+
+    A 429 with ``Retry-After`` pauses the whole connector for that long, capped at
+    ``max_retry_after_seconds`` so a hostile header cannot stall a worker for hours.
+    """
+
     requests_per_second: float = Field(default=10.0, gt=0)
+    burst: int = Field(default=1, ge=1)
+    max_retry_after_seconds: float = Field(default=60.0, gt=0)
+
+
+class BreakerSpec(BaseModel):
+    """Open after ``failure_threshold`` consecutive target failures; probe after recovery."""
+
+    failure_threshold: int = Field(default=5, ge=1)
+    recovery_seconds: float = Field(default=30.0, gt=0)
 
 
 class QueueSpec(BaseModel):
@@ -91,6 +106,7 @@ class ConnectorSpec(BaseModel):
     )
     retry: RetryPolicy = Field(default_factory=RetryPolicy)
     rate_limit: RateLimit = Field(default_factory=RateLimit)
+    breaker: BreakerSpec = Field(default_factory=BreakerSpec)
     queue: QueueSpec = Field(default_factory=QueueSpec)
     idempotency_ttl_seconds: int = Field(default=7 * 24 * 3600, ge=60)
 
