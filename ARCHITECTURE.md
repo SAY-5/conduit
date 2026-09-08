@@ -16,9 +16,16 @@ secret env var names, field mapping, retry policy, rate limit, queue settings). 
 sleeps, loops, or touches the queue. `remote_id` is the identifier recorded when a previous
 revision of the same task was delivered, so an adapter can update instead of create.
 
-Field mappings are `remote_field: source`, where `source` is either a dotted path into the task
-(`fields.region`) or a `$`-template (`"[$priority] $title"`). Secrets are looked up by logical
-name through the env var named in the spec, so a YAML never contains a credential.
+Field mappings are `remote_field: rule`. A rule is a bare source, either a dotted path into the
+task (`fields.region`) or a `$`-template (`"[$priority] $title"`), or a mapping with `source`,
+`type`, `required`, `enum`, `default`, `max_length`, and `truncate`. `conduit/core/mapping.py`
+resolves the source, falls back to `default` (a rule with only a default is a constant), coerces
+to `type` (`any` keeps the task's own type; `integer`, `number`, `boolean`, and `list` parse
+strings), then checks `required`, `enum`, and `max_length`, cutting or rejecting an overlong
+value. The first violation raises `MappingError(field, reason)`, where `reason` is one of
+`required`, `type`, `enum`, `max_length`. Adapters call `mapped(task)` and receive the
+transformed fields. Secrets are looked up by logical name through the env var named in the
+spec, so a YAML never contains a credential.
 
 | Adapter | Transport | Idempotency on the remote side |
 |---|---|---|
@@ -91,10 +98,12 @@ claim was released on failure, so a replay after the integration is fixed delive
 ## Worker
 
 `conduit/worker.py` is a single loop per connector: long-poll receive (up to 10 messages, 20 s
-wait), then for each message: record queue lag, claim, resolve `remote_id` for revisions above
-1, throttle to the spec's `requests_per_second`, `retry_call(adapter.deliver)`, then either
-mark delivered and delete, or release and set visibility to 0. Metrics on `/metrics`
-(Prometheus client): `conduit_delivered_total`, `conduit_deduplicated_total`,
+wait), then for each message: record queue lag, validate the task against the mapping rules
+(a misfit is deleted from the queue, logged as `delivery.rejected` with field and reason, and
+never claims a key), claim, resolve `remote_id` for revisions above 1, throttle to the spec's
+`requests_per_second`, `retry_call(adapter.deliver)`, then either mark delivered and delete, or
+release and set visibility to 0. Metrics on `/metrics` (Prometheus client):
+`conduit_delivered_total`, `conduit_deduplicated_total`, `conduit_rejected_total{reason}`,
 `conduit_retried_total`, `conduit_failed_total{reason}`, `conduit_dead_lettered_total`,
 `conduit_delivery_seconds` (attempt to ack) and `conduit_queue_lag_seconds` (submit to
 receive), all labelled by connector. Logs are structlog, JSON when `CONDUIT_JSON_LOGS=1`.

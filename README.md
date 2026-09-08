@@ -21,9 +21,10 @@ and in CI; the same modules target a real AWS account by dropping the endpoint o
         v                                                  |
  +---------------------------------------------------------+-------------+
  | worker (one per connector)                                             |
+ |   validate(mapping rules) : required/type/enum/length, rejected{reason} |
  |   claim(idempotency key) ----> DynamoDB conditional PutItem + TTL      |
  |   retry_call(adapter.deliver) : 429/5xx/timeout retried, 4xx returned  |
- |   /metrics : delivered, deduplicated, retried, dead_lettered, latency  |
+ |   /metrics : delivered, deduplicated, rejected, retried, dead_lettered |
  +----------------+----------------------+---------------------------+----+
                   |                      |                           |
                   v                      v                           v
@@ -53,9 +54,16 @@ secrets:
   email: JIRA_EMAIL
   api_token: JIRA_API_TOKEN
 mapping:
-  summary: title
+  summary:
+    source: title
+    required: true
+    max_length: 255          # truncated to fit
   description: body
-  customfield_10042: id
+  issuetype:
+    default: Task            # constant
+  customfield_10042:
+    source: id
+    required: true
 retry:
   max_attempts: 4
   base_seconds: 0.25
@@ -64,6 +72,16 @@ queue:
   max_receive_count: 3
   visibility_timeout_seconds: 45
 ```
+
+A mapping value is either a bare source (`description: body`, a dotted task path or a
+`$`-template such as `"[$priority] $title"`) or a rule with `source`, `type` (`string`,
+`integer`, `number`, `boolean`, `list`, or `any`), `required`, `enum`, `default`,
+`max_length`, and `truncate`. Defaults fill missing values, types are coerced, and an
+overlong value is cut or rejected depending on `truncate`. The worker checks every task
+against the rules before it claims an idempotency key: a task that cannot fit is
+acknowledged without delivery, logged with the field and reason, and counted in
+`conduit_rejected_total{reason}` instead of cycling through retries into the DLQ.
+`conduit submit` applies the same rules and refuses the offending tasks up front.
 
 The worker reads the same file to build the adapter, retry policy, and rate limit. Terraform
 reads it to create the queue pair with the redrive policy, a least-privilege IAM policy and role,
@@ -90,7 +108,7 @@ seven resources.
 
 ```
 make setup          # uv sync
-make test-unit      # 86 tests, no Docker
+make test-unit      # 112 tests, no Docker
 make up             # LocalStack + fakes + one worker per connector
 make tf-apply       # terraform apply against LocalStack (23 resources)
 make test           # unit + LocalStack integration + terraform plan tests
@@ -180,6 +198,27 @@ deploy/             docker-compose.yml (LocalStack, fakes, workers, optional Pro
 demo/run.py         the end-to-end run behind make demo
 tests/              unit (respx, moto), integration (LocalStack), terraform (plan diff)
 ```
+
+## Changelog
+
+### v2.0.0
+
+* Connector YAML mappings are typed rules: `source`, `type`, `required`, `enum`, `default`,
+  `max_length`, `truncate`. A bare string is still a source-only rule.
+* Transforms run before delivery: `$`-templates, defaults and constants, type coercion, and
+  truncation.
+* The worker validates every task before claiming its idempotency key and rejects misfits
+  with the field and reason; `conduit_rejected_total{reason}` and the `rejected` stat count
+  them. `conduit submit` rejects the same tasks before they are enqueued and exits 1.
+* `conduit config validate` reports the number of mapping rules per connector.
+
+### v1.0.0
+
+* One adapter interface for Slack, Jira, and signed webhooks.
+* Idempotency keys claimed through DynamoDB conditional puts, full-jitter backoff retries,
+  SQS queue plus DLQ per connector with `conduit dlq list` and `conduit dlq replay`.
+* Prometheus metrics per worker; Terraform `for_each` over `connectors/*.yaml`; LocalStack
+  for local runs and CI; `make demo` end-to-end run.
 
 ## License
 
