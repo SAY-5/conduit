@@ -2,6 +2,8 @@ import { Hero } from "./sections/Hero";
 import { Interface } from "./sections/Interface";
 import { Reliability } from "./sections/Reliability";
 import { Dlq } from "./sections/Dlq";
+import { Ship } from "./sections/Ship";
+import { Footer } from "./components/Footer";
 
 const REPO = "https://github.com/SAY-5/conduit";
 
@@ -40,7 +42,9 @@ export default function App() {
         <Interface />
         <Reliability />
         <Dlq />
+        <Ship />
       </main>
+      <Footer />
     </div>
   );
 }
