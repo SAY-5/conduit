@@ -56,3 +56,8 @@ markers = [
     "terraform: requires the terraform binary and LocalStack",
 ]
 addopts = "-q"
+filterwarnings = [
+    "ignore::DeprecationWarning:starlette.*",
+    "ignore::DeprecationWarning:fastapi.*",
+    "ignore:Using .httpx. with .starlette.testclient.*",
+]
