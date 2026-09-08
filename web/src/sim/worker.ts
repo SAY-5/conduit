@@ -55,8 +55,8 @@ export interface HandleTrace {
 
 export class Worker {
   readonly stats = emptyStats();
-  private lastSend: number | null = null;
-  private readonly minInterval: number;
+  /** Messages this worker may handle per second: the spec's rate limit. */
+  readonly requestsPerSecond: number;
 
   constructor(
     readonly spec: ConnectorSpec,
@@ -67,7 +67,7 @@ export class Worker {
     readonly rng: Rng,
     readonly log: (e: Omit<LogEvent, "seq" | "t" | "connector">) => void,
   ) {
-    this.minInterval = 1 / spec.rateLimit.requestsPerSecond;
+    this.requestsPerSecond = spec.rateLimit.requestsPerSecond;
   }
 
   /** One poll: receive a batch, handle each message. Returns the traces. */
@@ -104,7 +104,6 @@ export class Worker {
     this.log({ kind: "claim", event: "claim.acquired", taskId: task.id, key: short, detail: claim.condition });
 
     const remoteId = task.version > 1 ? this.store.latest(name, task.id) : null;
-    this.throttle();
     const started = this.clock.now();
     const sleep = (seconds: number) => this.clock.advance(seconds);
 
@@ -158,18 +157,8 @@ export class Worker {
     }
   }
 
-  private throttle(): void {
-    const now = this.clock.now();
-    if (this.lastSend !== null) {
-      const wait = this.minInterval - (now - this.lastSend);
-      if (wait > 0) this.clock.advance(wait);
-    }
-    this.lastSend = this.clock.now();
-  }
-
   reset(): void {
     Object.assign(this.stats, emptyStats());
-    this.lastSend = null;
   }
 }
 

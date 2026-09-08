@@ -93,7 +93,7 @@ export class FakeTarget {
     const key = request.headers["Idempotency-Key"];
     const existing = this.inbox.find((e) => e.idempotencyKey === key);
     if (existing) return this.ok(existing.remoteId);
-    const remoteId = this.remoteId(task);
+    const remoteId = this.remoteId();
     this.inbox.push({
       seq: this.inbox.length + 1,
       taskId: task.id,
@@ -106,7 +106,7 @@ export class FakeTarget {
     return this.ok(remoteId);
   }
 
-  private remoteId(task: Task): string {
+  private remoteId(): string {
     switch (this.type) {
       case "slack":
         return `${1700000000 + this.inbox.length}.${this.rng.hex(6)}`;
