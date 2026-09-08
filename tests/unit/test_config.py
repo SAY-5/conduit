@@ -74,7 +74,7 @@ def test_env_interpolation(tmp_path: Path):
     assert load_spec(path, env={}).target == "https://default.example/h"
     spec = load_spec(path, env={"HOOK_URL": "http://fake:8003/hook"})
     assert spec.target == "http://fake:8003/hook"
-    assert spec.mapping["note"] == "$title"
+    assert spec.mapping["note"].source == "$title"
     path.write_text("type: webhook\ntarget: ${MISSING}\nsecrets:\n  signing_secret: S\n")
     with pytest.raises(ConfigError, match="MISSING"):
         load_spec(path, env={})

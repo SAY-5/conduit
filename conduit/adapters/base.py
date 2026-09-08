@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import abc
 import os
-import string
 from typing import Any
 
 import httpx
 
 from conduit.config import ConnectorSpec
+from conduit.core.mapping import apply_mapping, render
 from conduit.core.retry import classify_response
 from conduit.models import DeliveryResult, Task
 
@@ -55,29 +55,12 @@ class Adapter(abc.ABC):
         return value
 
     def render(self, template: str, task: Task) -> Any:
-        """Resolve a mapping value: a bare field path or a ``$``-template string.
-
-        ``title`` returns the task title verbatim (preserving type), while
-        ``"[$id] $title"`` is formatted with string substitution.
-        """
-        if "$" not in template:
-            return task.field(template)
-        values = {
-            "id": task.id,
-            "version": task.version,
-            "title": task.title,
-            "body": task.body,
-            "status": task.status,
-            "priority": task.priority,
-            "assignee": task.assignee or "",
-            "url": task.url or "",
-            "labels": ",".join(task.labels),
-            **{k: v for k, v in task.fields.items() if isinstance(v, str | int | float)},
-        }
-        return string.Template(template).safe_substitute(values)
+        """Resolve a mapping source: a bare field path or a ``$``-template string."""
+        return render(template, task)
 
     def mapped(self, task: Task) -> dict[str, Any]:
-        return {remote: self.render(source, task) for remote, source in self.spec.mapping.items()}
+        """Remote fields after defaults, coercion, validation, and truncation."""
+        return apply_mapping(self.spec, task)
 
     def raise_for_status(self, response: httpx.Response) -> None:
         err = classify_response(response, self.spec.retry)

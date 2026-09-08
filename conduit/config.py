@@ -11,6 +11,37 @@ import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 ConnectorType = Literal["slack", "jira", "webhook"]
+FieldType = Literal["any", "string", "integer", "number", "boolean", "list"]
+
+
+class FieldRule(BaseModel):
+    """One remote field: where its value comes from and what shape it must have.
+
+    ``source`` is a dotted task path (``fields.region``) or a ``$``-template
+    (``"[$priority] $title"``). A bare string in the YAML is shorthand for a rule
+    with only a source. ``default`` fills in when the source resolves to nothing;
+    a rule with a default and no source is a constant. Values are coerced to
+    ``type`` (``any`` keeps whatever the task holds) and then checked against
+    ``required``, ``enum``, and ``max_length``;
+    an overlong string or list is cut to ``max_length`` when ``truncate`` is on
+    and rejected otherwise.
+    """
+
+    source: str | None = None
+    type: FieldType = "any"
+    required: bool = False
+    enum: list[Any] | None = None
+    default: Any = None
+    max_length: int | None = Field(default=None, ge=1)
+    truncate: bool = True
+
+    @model_validator(mode="after")
+    def _source_or_default(self) -> FieldRule:
+        if self.source is None and self.default is None:
+            raise ValueError("a mapping rule needs a source or a default")
+        if self.enum is not None and not self.enum:
+            raise ValueError("enum must list at least one value")
+        return self
 
 
 class RetryPolicy(BaseModel):
@@ -54,14 +85,21 @@ class ConnectorSpec(BaseModel):
         default_factory=dict,
         description="Logical secret name to environment variable name",
     )
-    mapping: dict[str, str] = Field(
+    mapping: dict[str, FieldRule] = Field(
         default_factory=dict,
-        description="Remote field to task field path or template",
+        description="Remote field to a source path, template, or typed rule",
     )
     retry: RetryPolicy = Field(default_factory=RetryPolicy)
     rate_limit: RateLimit = Field(default_factory=RateLimit)
     queue: QueueSpec = Field(default_factory=QueueSpec)
     idempotency_ttl_seconds: int = Field(default=7 * 24 * 3600, ge=60)
+
+    @field_validator("mapping", mode="before")
+    @classmethod
+    def _rules(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {k: {"source": v} if isinstance(v, str) else v for k, v in value.items()}
+        return value
 
     @field_validator("secrets")
     @classmethod

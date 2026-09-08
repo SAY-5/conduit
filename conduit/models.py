@@ -46,6 +46,7 @@ class Task(BaseModel):
 class DeliveryStatus(StrEnum):
     DELIVERED = "delivered"
     DEDUPLICATED = "deduplicated"
+    REJECTED = "rejected"
     FAILED = "failed"
 
 

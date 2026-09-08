@@ -10,6 +10,11 @@ delivered = Counter("conduit_delivered_total", "Tasks delivered to the remote sy
 deduplicated = Counter(
     "conduit_deduplicated_total", "Tasks skipped because the idempotency key was seen", LABELS
 )
+rejected = Counter(
+    "conduit_rejected_total",
+    "Tasks acknowledged without delivery because they failed mapping validation",
+    LABELS + ["reason"],
+)
 retried = Counter("conduit_retried_total", "Transient failures that were retried", LABELS)
 failed = Counter(
     "conduit_failed_total", "Deliveries returned to the queue for redrive", LABELS + ["reason"]
