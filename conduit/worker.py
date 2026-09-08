@@ -13,9 +13,11 @@ import structlog
 from conduit import metrics
 from conduit.adapters.base import Adapter
 from conduit.config import ConnectorSpec
+from conduit.core.breaker import STATE_VALUE, BreakerState, CircuitBreaker
 from conduit.core.idempotency import IdempotencyStore
 from conduit.core.mapping import validate_task
 from conduit.core.queue import Message, SqsQueue
+from conduit.core.ratelimit import TokenBucket
 from conduit.core.retry import DeliveryError, TransientError, retry_call
 from conduit.models import DeliveryResult, DeliveryStatus
 
@@ -24,6 +26,14 @@ log = structlog.get_logger()
 # A duplicate that arrives while another worker still holds the claim is re-polled
 # after this many seconds instead of the queue's full visibility timeout.
 IN_PROGRESS_RECHECK_SECONDS = 10
+# While the breaker is open the worker sleeps in slices this long so a stop
+# request and the visibility heartbeat on held messages both stay responsive.
+BREAKER_PAUSE_SLICE = 1.0
+
+
+def is_target_failure(err: TransientError) -> bool:
+    """5xx, timeouts, and connection errors mean the target is unwell; 429 is throttling."""
+    return err.status != 429
 
 
 @dataclass
@@ -35,6 +45,11 @@ class WorkerStats:
     retried: int = 0
     failed: int = 0
     dead_lettered: int = 0
+    rate_limit_waits: int = 0
+    rate_limit_wait_seconds: float = 0.0
+    retry_after_honored: int = 0
+    breaker_opens: int = 0
+    breaker_paused_seconds: float = 0.0
     latencies: list[float] = field(default_factory=list)
     retry_delays: list[float] = field(default_factory=list)
 
@@ -57,9 +72,17 @@ class Worker:
         self._sleep = sleep
         self._clock = clock
         self.stats = WorkerStats()
-        self._min_interval = 1.0 / spec.rate_limit.requests_per_second
-        self._last_send: float | None = None
+        self.bucket = TokenBucket(
+            spec.rate_limit.requests_per_second,
+            spec.rate_limit.burst,
+            max_penalty=spec.rate_limit.max_retry_after_seconds,
+            clock=clock,
+        )
+        self.breaker = CircuitBreaker(
+            spec.breaker.failure_threshold, spec.breaker.recovery_seconds, clock=clock
+        )
         self._log = log.bind(connector=spec.name, type=spec.type)
+        metrics.breaker_state.labels(spec.name).set(0)
 
     def run(
         self,
@@ -75,6 +98,9 @@ class Worker:
         idle = 0
         self._log.info("worker.start", queue=self.queue.name)
         while not stop.is_set():
+            if self.breaker.state is BreakerState.OPEN:
+                self._pause_while_open([], stop)
+                continue
             batch = self.queue.receive(wait_seconds=wait_seconds)
             if not batch:
                 idle += 1
@@ -82,7 +108,11 @@ class Worker:
                     break
                 continue
             idle = 0
-            for message in batch:
+            for index, message in enumerate(batch):
+                if self.breaker.state is BreakerState.OPEN:
+                    self._pause_while_open(batch[index:], stop)
+                    if stop.is_set():
+                        break
                 self.handle(message)
                 handled += 1
                 if max_messages is not None and handled >= max_messages:
@@ -117,6 +147,12 @@ class Worker:
                 detail=f"mapping {problem.reason}: {problem}",
             )
 
+        if not self.breaker.allow():
+            hold = int(self.breaker.remaining()) + 1
+            self.queue.extend_visibility(message.receipt_handle, hold)
+            logger.info("delivery.breaker_open", hold=hold)
+            return None
+
         claim = self.store.claim(key, connector=name, task_id=task.id)
         if not claim.acquired:
             if claim.duplicate:
@@ -147,6 +183,7 @@ class Worker:
             budget = int(delay + self.spec.retry.timeout_seconds) + 5
             self.queue.extend_visibility(message.receipt_handle, budget)
             logger.warning("delivery.retry", attempt=attempt, delay=round(delay, 3), error=str(err))
+            self._note_transient(err, logger)
 
         try:
             result, outcome = retry_call(
@@ -159,6 +196,10 @@ class Worker:
             self.store.release(key)
             elapsed = self._clock() - started
             reason = "permanent" if not err.retryable else "exhausted"
+            if isinstance(err, TransientError):
+                self._note_transient(err, logger)
+            else:
+                self._note_target_ok(logger)
             self.stats.failed += 1
             metrics.failed.labels(name, reason).inc()
             will_dead_letter = message.receive_count >= self.spec.queue.max_receive_count
@@ -184,6 +225,7 @@ class Worker:
             )
 
         elapsed = self._clock() - started
+        self._note_target_ok(logger)
         self.store.mark_delivered(key, result.remote_id)
         self.queue.delete(message.receipt_handle)
         self.stats.delivered += 1
@@ -199,13 +241,56 @@ class Worker:
         return result.model_copy(update={"attempts": outcome.attempts})
 
     def _throttle(self) -> None:
-        if self._last_send is not None:
-            wait = self._min_interval - (self._clock() - self._last_send)
-            if wait > 0:
-                self._sleep(wait)
-        self._last_send = self._clock()
+        wait = self.bucket.acquire()
+        if wait <= 0:
+            return
+        self.stats.rate_limit_waits += 1
+        self.stats.rate_limit_wait_seconds += wait
+        metrics.rate_limit_waits.labels(self.spec.name).inc()
+        metrics.rate_limit_wait_seconds.labels(self.spec.name).inc(wait)
+        self._sleep(wait)
 
-    def summary(self) -> dict[str, float | int]:
+    def _note_transient(self, err: TransientError, logger) -> None:
+        """Feed one transient attempt to the bucket (429) or the breaker (target down)."""
+        name = self.spec.name
+        if err.status == 429 and err.retry_after is not None:
+            pause = self.bucket.penalize(err.retry_after)
+            self.stats.retry_after_honored += 1
+            metrics.retry_after_honored.labels(name).inc()
+            logger.info("rate_limit.retry_after", pause=round(pause, 3))
+        if is_target_failure(err) and self.breaker.record_failure():
+            self.stats.breaker_opens += 1
+            metrics.breaker_opens.labels(name).inc()
+            metrics.breaker_state.labels(name).set(STATE_VALUE[BreakerState.OPEN])
+            logger.error(
+                "breaker.open",
+                threshold=self.breaker.failure_threshold,
+                recovery=self.breaker.recovery_seconds,
+            )
+
+    def _note_target_ok(self, logger) -> None:
+        if self.breaker.record_success():
+            metrics.breaker_state.labels(self.spec.name).set(STATE_VALUE[BreakerState.CLOSED])
+            logger.info("breaker.closed")
+
+    def _pause_while_open(self, held: list[Message], stop: threading.Event) -> None:
+        """Sleep until the breaker half-opens, keeping any held messages invisible."""
+        name = self.spec.name
+        metrics.breaker_state.labels(name).set(STATE_VALUE[BreakerState.OPEN])
+        self._log.warning("breaker.paused", remaining=round(self.breaker.remaining(), 3))
+        while self.breaker.state is BreakerState.OPEN and not stop.is_set():
+            remaining = self.breaker.remaining()
+            for message in held:
+                self.queue.extend_visibility(message.receipt_handle, int(remaining) + 5)
+            nap = min(BREAKER_PAUSE_SLICE, remaining)
+            self._sleep(nap)
+            self.stats.breaker_paused_seconds += nap
+            metrics.breaker_paused_seconds.labels(name).inc(nap)
+        if self.breaker.state is BreakerState.HALF_OPEN:
+            metrics.breaker_state.labels(name).set(STATE_VALUE[BreakerState.HALF_OPEN])
+            self._log.info("breaker.half_open")
+
+    def summary(self) -> dict[str, float | int | str]:
         s = self.stats
         return {
             "received": s.received,
@@ -215,6 +300,11 @@ class Worker:
             "retried": s.retried,
             "failed": s.failed,
             "dead_lettered": s.dead_lettered,
+            "rate_limit_waits": s.rate_limit_waits,
+            "retry_after_honored": s.retry_after_honored,
+            "breaker_state": str(self.breaker.state),
+            "breaker_opens": s.breaker_opens,
+            "breaker_paused_seconds": round(s.breaker_paused_seconds, 3),
             "p50_ms": round(percentile(s.latencies, 50) * 1000, 1),
             "p95_ms": round(percentile(s.latencies, 95) * 1000, 1),
         }
