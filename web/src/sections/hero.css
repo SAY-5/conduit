@@ -122,3 +122,10 @@
 }
 .hero-stats { grid-template-columns: repeat(4, minmax(0, auto)); }
 .hero-stats .stat-label { white-space: normal; }
+
+/* two columns once four stat labels stop fitting side by side, and a common
+   label height so the numbers line up whether a label wraps or not */
+.hero-stats .stat-label { min-height: 2.3em; }
+@media (max-width: 760px) {
+  .hero-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.2rem 1.4rem; }
+}

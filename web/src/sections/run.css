@@ -54,7 +54,7 @@
 
 .run-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  grid-template-columns: minmax(0, 1.22fr) minmax(0, 0.78fr);
   gap: 1.2rem;
   margin-top: 1.2rem;
   align-items: start;
@@ -67,7 +67,9 @@
   min-width: 0;
 }
 .run-table-scroll { overflow-x: auto; }
-.run-table { min-width: 480px; }
+.run-table { min-width: 520px; font-size: 0.8rem; }
+.run-table .chip { white-space: nowrap; }
+.run-table th, .run-table td { padding-inline: 0.5rem; }
 .run-table th[scope="row"] { padding-left: 0; }
 .run-table td { font-variant-numeric: tabular-nums; }
 .run-good { color: var(--teal-2); }
@@ -78,11 +80,12 @@
 .run-note b { color: var(--ivory-2); font-weight: 500; }
 .run-note code { color: var(--teal-2); }
 .run-log .log { max-height: 360px; }
+.run-log .log-line { grid-template-columns: 4.8rem 9.2rem 1fr; }
 
 .run-summary { margin-top: 1.2rem; display: flex; flex-direction: column; gap: 0.9rem; }
 .run-summary-head { display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap; }
 .run-summary-block {
-  max-height: 520px;
+  max-height: 640px;
   overflow: auto;
   font-size: 0.74rem;
   line-height: 1.65;

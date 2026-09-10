@@ -32,26 +32,32 @@ export function SectionHead({ eyebrow, title, lede, id }: { eyebrow: string; tit
 export function Counter({ value, digits = 0, suffix = "", className }: { value: number; digits?: number; suffix?: string; className?: string }) {
   const reduced = useReducedMotion();
   const [shown, setShown] = useState(value);
-  const from = useRef(value);
+  // Where the tween is right now, so a target that changes mid-flight keeps the
+  // number continuous instead of restarting from the last settled value.
+  const current = useRef(value);
   useEffect(() => {
     if (reduced) {
+      current.current = value;
       setShown(value);
       return;
     }
-    const start = from.current;
+    const start = current.current;
     const target = value;
-    if (start === target) return;
+    if (start === target) {
+      setShown(target);
+      return;
+    }
     let raf = 0;
     let t0: number | null = null;
-    const dur = 700;
+    const dur = 450;
     const step = (ts: number) => {
       if (t0 === null) t0 = ts;
       const p = Math.min(1, (ts - t0) / dur);
       const eased = 1 - (1 - p) ** 3;
-      const v = start + (target - start) * eased;
+      const v = p < 1 ? start + (target - start) * eased : target;
+      current.current = v;
       setShown(v);
       if (p < 1) raf = requestAnimationFrame(step);
-      else from.current = target;
     };
     raf = requestAnimationFrame(step);
     return () => cancelAnimationFrame(raf);

@@ -327,3 +327,10 @@ button, input, textarea, select { font: inherit; color: inherit; }
 
 /* long request lines in code labels wrap instead of widening the page */
 .code-label { overflow-wrap: anywhere; }
+
+/* log lines are flex items: keep them at their natural height instead of
+   shrinking to fit when the stream is longer than the panel */
+.log-line { flex: 0 0 auto; }
+
+/* event names never bleed into the message column */
+.log-line .ev { overflow: hidden; text-overflow: ellipsis; }
