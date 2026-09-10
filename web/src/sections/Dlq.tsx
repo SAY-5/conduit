@@ -106,6 +106,7 @@ export function Dlq() {
               {stage === "replaying" ? "Replaying: messages are back on the work queue with attempt + 1." : null}
               {stage === "drained" ? `DLQ now 0; webhook delivered ${inbox.length}/${COUNT}, ${replayedCount} of them on replay. The fake dedupes on Idempotency-Key, so a second replay could never double-post.` : null}
             </p>
+            <div className="dlq-table-scroll">
             <table className="table dlq-table">
               <thead><tr><th>task</th><th>ver</th><th>key</th><th>receives</th><th>replays</th><th>dead-lettered at</th></tr></thead>
               <tbody>
@@ -122,6 +123,7 @@ export function Dlq() {
                 ))}
               </tbody>
             </table>
+            </div>
           </div>
           <div className="dlq-side">
             <div className="glass dlq-panel">

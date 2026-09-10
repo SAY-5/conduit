@@ -21,3 +21,11 @@
   .dlq-grid { grid-template-columns: 1fr; }
   .dlq-meters { grid-template-columns: 1fr; }
 }
+
+/* keep the panel inside its grid track at narrow widths; the table scrolls itself */
+.dlq-panel { min-width: 0; }
+.dlq-table-scroll { overflow-x: auto; }
+.dlq-table { min-width: 430px; }
+@media (max-width: 900px) {
+  .dlq-grid { grid-template-columns: minmax(0, 1fr); }
+}

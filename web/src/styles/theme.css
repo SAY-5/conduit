@@ -324,3 +324,6 @@ button, input, textarea, select { font: inherit; color: inherit; }
 }
 .footer-links a { color: var(--ivory-2); }
 .footer-links a:hover { color: var(--teal-2); }
+
+/* long request lines in code labels wrap instead of widening the page */
+.code-label { overflow-wrap: anywhere; }
