@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "selfcheck": "tsx src/sim/selfcheck.ts"
+    "selfcheck": "tsx src/sim/selfcheck.ts",
+    "bundle": "tsc -b && vite build"
   },
   "dependencies": {
     "framer-motion": "^11.11.17",
