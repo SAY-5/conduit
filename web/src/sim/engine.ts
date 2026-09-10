@@ -202,42 +202,57 @@ export async function setupScenario(engine: Engine): Promise<ScenarioSetup> {
   return { tasks, rateLimited, hardFailed, duplicates, submitted };
 }
 
-/** The whole demo end to end, with the README's checks. */
-export async function runScenario(engine: Engine): Promise<Summary> {
-  engine.reset();
-  const setup = await setupScenario(engine);
-  const drainSeconds = await engine.drain();
-  const specs = engine.specs;
+/** Everything read off the queues and inboxes before the fault is cleared. */
+export interface PhaseOne {
+  drainSeconds: number;
+  delivered: Record<string, number>;
+  uniqueKeys: Record<string, number>;
+  dedupPer: Record<string, number>;
+  deadLetterIds: string[];
+  byAttempt: Record<number, number>;
+  delays: number[];
+  latencies: number[];
+  e2e: number[];
+}
+
+/** Snapshot the run at the point the README calls "queues drained". */
+export function capturePhaseOne(engine: Engine, drainSeconds: number): PhaseOne {
   const delivered: Record<string, number> = {};
   const uniqueKeys: Record<string, number> = {};
   const dedupPer: Record<string, number> = {};
-  for (const name of Object.keys(specs)) {
+  for (const name of Object.keys(engine.specs)) {
     const rt = engine.connectors[name];
     delivered[name] = rt.target.inbox.length;
     uniqueKeys[name] = rt.target.seenKeys().size;
     dedupPer[name] = rt.worker.stats.deduplicated;
   }
-  const dead = engine.deadLetters("webhook-crm").map((m) => m.envelope.task.id).sort();
-  const jira = engine.connectors["jira-support"];
   const byAttempt: Record<number, number> = {};
-  for (const a of jira.worker.stats.retryAttempts) byAttempt[a] = (byAttempt[a] ?? 0) + 1;
-  const allDelays = Object.values(engine.connectors).flatMap((rt) => rt.worker.stats.retryDelays);
-  const allLatency = Object.values(engine.connectors).flatMap((rt) => rt.worker.stats.latencies);
-  const e2e = Object.values(engine.connectors).flatMap((rt) => rt.target.inbox.map((e) => e.receivedAt));
+  for (const a of engine.connectors["jira-support"].worker.stats.retryAttempts) byAttempt[a] = (byAttempt[a] ?? 0) + 1;
+  return {
+    drainSeconds,
+    delivered,
+    uniqueKeys,
+    dedupPer,
+    deadLetterIds: engine.deadLetters("webhook-crm").map((m) => m.envelope.task.id).sort(),
+    byAttempt,
+    delays: Object.values(engine.connectors).flatMap((rt) => rt.worker.stats.retryDelays),
+    latencies: Object.values(engine.connectors).flatMap((rt) => rt.worker.stats.latencies),
+    e2e: Object.values(engine.connectors).flatMap((rt) => rt.target.inbox.map((e) => e.receivedAt)),
+  };
+}
 
-  engine.connectors["webhook-crm"].target.clearFaults();
-  const replayed = engine.replay("webhook-crm").length;
-  await engine.drain();
+/** Fold the two phases into the summary the README prints, with its checks applied. */
+export function summarize(engine: Engine, setup: ScenarioSetup, one: PhaseOne, replayed: number): Summary {
+  const jira = engine.connectors["jira-support"];
   const dlqAfter = engine.deadLetters("webhook-crm").length;
   const webhookAfter = engine.connectors["webhook-crm"].target.inbox.length;
-
-  const deduplicated = Object.values(dedupPer).reduce((a, b) => a + b, 0);
-  const deadLettered = dead.length;
+  const deduplicated = Object.values(one.dedupPer).reduce((a, b) => a + b, 0);
+  const deadLettered = one.deadLetterIds.length;
   const problems: string[] = [];
   if (deduplicated !== setup.duplicates) problems.push(`deduplicated ${deduplicated} != duplicates ${setup.duplicates}`);
   if (deadLettered !== WEBHOOK_HARD_FAIL_TASKS) problems.push(`dead letters ${deadLettered} != hard failures ${WEBHOOK_HARD_FAIL_TASKS}`);
   if (dlqAfter !== 0 || webhookAfter !== UNIQUE_PER_CONNECTOR) problems.push("replay did not drain the DLQ");
-  for (const n of ["slack-ops", "jira-support"]) if (delivered[n] !== UNIQUE_PER_CONNECTOR) problems.push(`delivered ${n}=${delivered[n]}`);
+  for (const n of ["slack-ops", "jira-support"]) if (one.delivered[n] !== UNIQUE_PER_CONNECTOR) problems.push(`delivered ${n}=${one.delivered[n]}`);
 
   return {
     runId: engine.runId,
@@ -245,27 +260,66 @@ export async function runScenario(engine: Engine): Promise<Summary> {
     unique: Object.values(setup.tasks).reduce((n, t) => n + t.length, 0),
     duplicates: setup.duplicates,
     deduplicated,
-    delivered,
-    uniqueKeys,
-    dedupPer,
+    delivered: one.delivered,
+    uniqueKeys: one.uniqueKeys,
+    dedupPer: one.dedupPer,
     retried: Object.values(engine.connectors).reduce((n, rt) => n + rt.worker.stats.retried, 0),
     rejected429: jira.target.rejected,
     rateLimitedTasks: jira.target.rateLimitHits.size,
-    byAttempt,
-    delayMin: allDelays.length ? Math.min(...allDelays) : 0,
-    delayMedian: percentile(allDelays, 50),
-    delayMax: allDelays.length ? Math.max(...allDelays) : 0,
+    byAttempt: one.byAttempt,
+    delayMin: one.delays.length ? Math.min(...one.delays) : 0,
+    delayMedian: percentile(one.delays, 50),
+    delayMax: one.delays.length ? Math.max(...one.delays) : 0,
     deadLettered,
-    deadLetterIds: dead,
+    deadLetterIds: one.deadLetterIds,
     replayed,
     dlqAfterReplay: dlqAfter,
     webhookDeliveredAfter: webhookAfter,
-    p50Ms: percentile(allLatency, 50) * 1000,
-    p95Ms: percentile(allLatency, 95) * 1000,
-    e2eP50: percentile(e2e, 50),
-    e2eP95: percentile(e2e, 95),
-    drainSeconds,
+    p50Ms: percentile(one.latencies, 50) * 1000,
+    p95Ms: percentile(one.latencies, 95) * 1000,
+    e2eP50: percentile(one.e2e, 50),
+    e2eP95: percentile(one.e2e, 95),
+    drainSeconds: one.drainSeconds,
     ok: problems.length === 0,
     problems,
   };
+}
+
+/** The whole demo end to end, with the README's checks. */
+export async function runScenario(engine: Engine): Promise<Summary> {
+  engine.reset();
+  const setup = await setupScenario(engine);
+  const one = capturePhaseOne(engine, await engine.drain());
+  engine.connectors["webhook-crm"].target.clearFaults();
+  const replayed = engine.replay("webhook-crm").length;
+  await engine.drain();
+  return summarize(engine, setup, one, replayed);
+}
+
+const pad = (label: string) => label.padEnd(22);
+
+/** The `conduit demo summary` block, in the layout demo/run.py prints it. */
+export function formatSummary(s: Summary, planLines: string[], planSummary: string): string {
+  const inboxes: Record<string, string> = { "jira-support": "jira fake inbox", "slack-ops": "slack fake inbox", "webhook-crm": "webhook fake inbox" };
+  const lines = [
+    `conduit demo summary (run ${s.runId}, browser port of demo/run.py)`,
+    "=".repeat(72),
+    `${pad("tasks submitted")}${s.submitted}  (${s.unique} unique + ${s.duplicates} duplicate resubmits)`,
+    `${pad("deduplicated")}${s.deduplicated}  (must equal duplicates: ${s.deduplicated === s.duplicates ? "ok" : "MISMATCH"})`,
+    "delivered per connector",
+    ...Object.keys(s.delivered).map((n) => `  ${n.padEnd(18)}${String(s.delivered[n]).padStart(3)} delivered, ${String(s.uniqueKeys[n]).padStart(3)} unique keys, ${String(s.dedupPer[n]).padStart(3)} deduplicated (${inboxes[n] ?? "fake inbox"})`),
+    `${pad("retried")}${s.retried}  (jira fake returned 429 ${s.rejected429} times for ${s.rateLimitedTasks} tasks)`,
+    `${pad("  backoff evidence")}attempt 1 -> ${s.byAttempt[1] ?? 0} retries, attempt 2 -> ${s.byAttempt[2] ?? 0} retries; delay min/median/max ${s.delayMin.toFixed(3)}s / ${s.delayMedian.toFixed(3)}s / ${s.delayMax.toFixed(3)}s (policy base 0.25s x2, cap 8s, full jitter)`,
+    `${pad("dead-lettered")}${s.deadLettered}  (must equal hard failures ${WEBHOOK_HARD_FAIL_TASKS}: ${s.deadLettered === WEBHOOK_HARD_FAIL_TASKS ? "ok" : "MISMATCH"}); conduit-webhook-crm-dlq after maxReceiveCount=2`,
+    `${pad("  dead letters")}${s.deadLetterIds.map((t) => t.slice(-4)).join(", ")}`,
+    `${pad("DLQ replay")}${s.replayed} replayed after clearing the fault; DLQ now ${s.dlqAfterReplay}; webhook delivered ${s.webhookDeliveredAfter}/${UNIQUE_PER_CONNECTOR}`,
+    `${pad("delivery latency")}p50 ${s.p50Ms.toFixed(1)} ms, p95 ${s.p95Ms.toFixed(1)} ms (worker attempt-to-ack)`,
+    `${pad("end-to-end latency")}p50 ${s.e2eP50.toFixed(2)} s, p95 ${s.e2eP95.toFixed(2)} s (submit-to-remote-receipt); queues drained in ${s.drainSeconds.toFixed(1)}s`,
+    "new integration from one file (connectors/pager-oncall.yaml, 10 lines):",
+    `  ${planSummary}`,
+    ...planLines.map((a) => `  + ${a}`),
+    "=".repeat(72),
+    s.ok ? "all checks passed" : `CHECKS FAILED: ${s.problems.join("; ")}`,
+  ];
+  return lines.join("\n");
 }
