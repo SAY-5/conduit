@@ -160,6 +160,14 @@ if deduplicated != duplicates, dead letters != hard failures, or the replay does
 DLQ. The end-to-end p95 is dominated by the Jira connector's 10 requests/s rate limit plus its
 retries; per-attempt delivery latency is the worker's own measurement.
 
+## Browser demo
+
+`web/` is a static page that runs the same demo without Docker: `web/src/sim` ports the worker,
+idempotency store, queue, retry policy, token bucket, and Terraform resource set to TypeScript,
+driven by a seeded PRNG and a virtual clock. `npm run selfcheck` in `web/` reproduces the
+figures above (60 deduplicated, 10 dead-lettered then replayed to 0, seven resources planned for
+a fourth connector YAML) as 42 assertions in Node. See [web/README.md](web/README.md).
+
 ## LocalStack, not AWS
 
 No AWS account was used to build or verify this project. `deploy/docker-compose.yml` runs
