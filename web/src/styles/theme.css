@@ -21,8 +21,8 @@
   --slack: #e8b4ff;
   --jira: #7fb2ff;
   --hook: #ffb07a;
-  --font-display: "Chillax", "Avenir Next", "Segoe UI", sans-serif;
-  --font-body: "Switzer", "Avenir Next", "Segoe UI", sans-serif;
+  --font-display: "Chillax", "Avenir Next", "Segoe UI", Roboto, sans-serif;
+  --font-body: "Chillax", "Avenir Next", "Segoe UI", Roboto, sans-serif;
   --font-mono: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
   --radius: 18px;
   --radius-sm: 10px;
