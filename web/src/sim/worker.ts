@@ -5,12 +5,27 @@ import { isDuplicate, type IdempotencyStore } from "./idempotency";
 import type { DeliveryResult } from "./models";
 import type { Clock, Rng } from "./prng";
 import type { Queue, QueueMessage } from "./queue";
-import { DeliveryError, retryCall, type RetryOutcome } from "./retry";
+import { DeliveryError, retryCall, TransientError, type RetryOutcome } from "./retry";
 import type { ConnectorSpec } from "./specs";
+import { CircuitBreaker, isTargetFailure, TokenBucket } from "./throttle";
 
 export const IN_PROGRESS_RECHECK_SECONDS = 10;
+/** While the breaker is open the worker sleeps in slices this long. */
+export const BREAKER_PAUSE_SLICE = 1;
 
-export type EventKind = "claim" | "ok" | "dedup" | "retry" | "fail" | "dlq" | "replay" | "in_progress" | "submit" | "info";
+export type EventKind =
+  | "claim"
+  | "ok"
+  | "dedup"
+  | "retry"
+  | "fail"
+  | "dlq"
+  | "replay"
+  | "in_progress"
+  | "submit"
+  | "info"
+  | "throttle"
+  | "breaker";
 
 export interface LogEvent {
   seq: number;
@@ -37,10 +52,35 @@ export interface WorkerStats {
   retryDelays: number[];
   retryAttempts: number[];
   queueLags: number[];
+  rateLimitWaits: number;
+  rateLimitWaitSeconds: number;
+  retryAfterHonored: number;
+  breakerOpens: number;
+  breakerPausedSeconds: number;
+  breakerHolds: number;
 }
 
 export function emptyStats(): WorkerStats {
-  return { received: 0, delivered: 0, deduplicated: 0, retried: 0, failed: 0, failedPermanent: 0, failedExhausted: 0, deadLettered: 0, latencies: [], retryDelays: [], retryAttempts: [], queueLags: [] };
+  return {
+    received: 0,
+    delivered: 0,
+    deduplicated: 0,
+    retried: 0,
+    failed: 0,
+    failedPermanent: 0,
+    failedExhausted: 0,
+    deadLettered: 0,
+    latencies: [],
+    retryDelays: [],
+    retryAttempts: [],
+    queueLags: [],
+    rateLimitWaits: 0,
+    rateLimitWaitSeconds: 0,
+    retryAfterHonored: 0,
+    breakerOpens: 0,
+    breakerPausedSeconds: 0,
+    breakerHolds: 0,
+  };
 }
 
 export interface HandleTrace {
@@ -50,13 +90,17 @@ export interface HandleTrace {
   retry: RetryOutcome | null;
   elapsed: number;
   willDeadLetter: boolean;
-  reason: "delivered" | "deduplicated" | "permanent" | "exhausted" | "in_progress";
+  reason: "delivered" | "deduplicated" | "permanent" | "exhausted" | "in_progress" | "breaker_open";
 }
 
 export class Worker {
   readonly stats = emptyStats();
   /** Messages this worker may handle per second: the spec's rate limit. */
   readonly requestsPerSecond: number;
+  /** Paces sends at the connector's rate limit and absorbs Retry-After pauses. */
+  readonly bucket: TokenBucket;
+  /** Pauses the connector while its target looks down. */
+  readonly breaker: CircuitBreaker;
 
   constructor(
     readonly spec: ConnectorSpec,
@@ -68,14 +112,76 @@ export class Worker {
     readonly log: (e: Omit<LogEvent, "seq" | "t" | "connector">) => void,
   ) {
     this.requestsPerSecond = spec.rateLimit.requestsPerSecond;
+    const now = () => this.clock.now();
+    this.bucket = new TokenBucket(spec.rateLimit.requestsPerSecond, spec.rateLimit.burst, spec.rateLimit.maxRetryAfterSeconds, now);
+    this.breaker = new CircuitBreaker(spec.breaker.failureThreshold, spec.breaker.recoverySeconds, now);
   }
 
   /** One poll: receive a batch, handle each message. Returns the traces. */
   async poll(max = 10): Promise<HandleTrace[]> {
+    if (this.isOpen()) {
+      this.pauseWhileOpen([]);
+      return [];
+    }
     const batch = this.queue.receive(max);
     const traces: HandleTrace[] = [];
-    for (const message of batch) traces.push(await this.handle(message));
+    for (let i = 0; i < batch.length; i++) {
+      if (this.isOpen()) {
+        this.pauseWhileOpen(batch.slice(i));
+        break;
+      }
+      traces.push(await this.handle(batch[i]));
+    }
     return traces;
+  }
+
+  private isOpen(): boolean {
+    return this.breaker.state === "open";
+  }
+
+  /** Reserve a token; sleep for however long the bucket says the send must wait. */
+  private throttle(): void {
+    const wait = this.bucket.acquire();
+    if (wait <= 0) return;
+    this.stats.rateLimitWaits += 1;
+    this.stats.rateLimitWaitSeconds += wait;
+    this.clock.advance(wait);
+  }
+
+  /** Feed one transient attempt to the bucket (429) or the breaker (target down). */
+  private noteTransient(err: TransientError, taskId: string, key: string): void {
+    if (err.status === 429 && err.retryAfter !== null) {
+      const pause = this.bucket.penalize(err.retryAfter);
+      this.stats.retryAfterHonored += 1;
+      this.log({ kind: "throttle", event: "rate_limit.retry_after", taskId, key, detail: `pause=${pause.toFixed(3)}s for every send on this connector` });
+    }
+    if (isTargetFailure(err.status) && this.breaker.recordFailure()) {
+      this.stats.breakerOpens += 1;
+      this.log({ kind: "breaker", event: "breaker.open", taskId, key, detail: `threshold=${this.breaker.failureThreshold} recovery=${this.breaker.recoverySeconds}s` });
+    }
+  }
+
+  private noteTargetOk(taskId: string, key: string): void {
+    if (this.breaker.recordSuccess()) {
+      this.log({ kind: "breaker", event: "breaker.closed", taskId, key, detail: "probe succeeded" });
+    }
+  }
+
+  /** Sleep until the breaker half-opens, keeping any held messages invisible. */
+  private pauseWhileOpen(held: QueueMessage[]): void {
+    this.log({ kind: "breaker", event: "breaker.paused", taskId: "", key: "", detail: `remaining=${this.breaker.remaining().toFixed(3)}s held=${held.length}` });
+    let guard = 0;
+    while (this.isOpen() && guard++ < 10_000) {
+      const remaining = this.breaker.remaining();
+      for (const m of held) this.queue.changeVisibility(m.messageId, Math.floor(remaining) + 5);
+      const nap = Math.min(BREAKER_PAUSE_SLICE, remaining);
+      this.clock.advance(nap);
+      this.stats.breakerPausedSeconds += nap;
+      if (nap <= 0) break;
+    }
+    if (this.breaker.state === "half_open") {
+      this.log({ kind: "breaker", event: "breaker.half_open", taskId: "", key: "", detail: "one probe admitted" });
+    }
   }
 
   async handle(message: QueueMessage): Promise<HandleTrace> {
@@ -87,6 +193,14 @@ export class Worker {
     s.received += 1;
     s.queueLags.push(Math.max(0, this.clock.now() - env.submittedAt));
     const short = key.slice(0, 12);
+
+    if (!this.breaker.allow()) {
+      const hold = Math.floor(this.breaker.remaining()) + 1;
+      this.queue.changeVisibility(message.messageId, hold);
+      this.stats.breakerHolds += 1;
+      this.log({ kind: "breaker", event: "delivery.breaker_open", taskId: task.id, key: short, detail: `hold=${hold}s` });
+      return { message, claim: { acquired: false, state: null, remoteId: null, condition: "failed" }, result: null, retry: null, elapsed: 0, willDeadLetter: false, reason: "breaker_open" };
+    }
 
     const claim = this.store.claim(key, name, task.id);
     if (!claim.acquired) {
@@ -104,6 +218,7 @@ export class Worker {
     this.log({ kind: "claim", event: "claim.acquired", taskId: task.id, key: short, detail: claim.condition });
 
     const remoteId = task.version > 1 ? this.store.latest(name, task.id) : null;
+    this.throttle();
     const started = this.clock.now();
     const sleep = (seconds: number) => this.clock.advance(seconds);
 
@@ -121,9 +236,11 @@ export class Worker {
           const budget = Math.floor(delay + this.spec.retry.timeoutSeconds) + 5;
           this.queue.changeVisibility(message.messageId, budget);
           this.log({ kind: "retry", event: "delivery.retry", taskId: task.id, key: short, detail: `attempt=${attempt} delay=${delay.toFixed(3)}s ${err.message.slice(0, 40)}`, data: { attempt, delay, status: err.status } });
+          this.noteTransient(err, task.id, short);
         },
       );
       retry = outcome;
+      this.noteTargetOk(task.id, short);
       this.clock.advance(this.adapter.target.lastLatency);
       const elapsed = this.clock.now() - started;
       this.store.markDelivered(key, value.remoteId);
@@ -135,6 +252,7 @@ export class Worker {
     } catch (exc) {
       const err = exc as DeliveryError & { outcome?: RetryOutcome };
       retry = err.outcome ?? null;
+      if (err instanceof TransientError) this.noteTransient(err, task.id, short);
       this.store.release(key);
       const elapsed = this.clock.now() - started;
       const reason = err.retryable ? "exhausted" : "permanent";
@@ -159,6 +277,8 @@ export class Worker {
 
   reset(): void {
     Object.assign(this.stats, emptyStats());
+    this.bucket.reset();
+    this.breaker.reset();
   }
 }
 

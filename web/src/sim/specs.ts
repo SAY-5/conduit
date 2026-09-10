@@ -20,6 +20,19 @@ export interface QueueSpec {
   dlqRetentionSeconds: number;
 }
 
+/** Token bucket: requests_per_second refill, burst capacity, Retry-After cap. */
+export interface RateLimit {
+  requestsPerSecond: number;
+  burst: number;
+  maxRetryAfterSeconds: number;
+}
+
+/** Open after failureThreshold consecutive target failures; probe after recovery. */
+export interface BreakerSpec {
+  failureThreshold: number;
+  recoverySeconds: number;
+}
+
 export interface ConnectorSpec {
   name: string;
   type: ConnectorType;
@@ -28,10 +41,22 @@ export interface ConnectorSpec {
   secrets: Record<string, string>;
   mapping: Record<string, string>;
   retry: RetryPolicy;
-  rateLimit: { requestsPerSecond: number };
+  rateLimit: RateLimit;
+  breaker: BreakerSpec;
   queue: QueueSpec;
   idempotencyTtlSeconds: number;
 }
+
+export const DEFAULT_RATE_LIMIT: RateLimit = {
+  requestsPerSecond: 10,
+  burst: 1,
+  maxRetryAfterSeconds: 60,
+};
+
+export const DEFAULT_BREAKER: BreakerSpec = {
+  failureThreshold: 5,
+  recoverySeconds: 30,
+};
 
 export const DEFAULT_RETRY: RetryPolicy = {
   maxAttempts: 5,
@@ -272,6 +297,7 @@ export function loadSpec(name: string, text: string, env: Record<string, string>
     dlqRetentionSeconds: num(queueRaw, "dlq_retention_seconds", DEFAULT_QUEUE.dlqRetentionSeconds, 60, 1209600),
   };
   const rateRaw = (raw.rate_limit as YamlMap) ?? {};
+  const breakerRaw = (raw.breaker as YamlMap) ?? {};
   return {
     name,
     type,
@@ -280,7 +306,15 @@ export function loadSpec(name: string, text: string, env: Record<string, string>
     secrets,
     mapping: strMap(raw, "mapping"),
     retry,
-    rateLimit: { requestsPerSecond: num(rateRaw, "requests_per_second", 10, 1e-9, 1e9) },
+    rateLimit: {
+      requestsPerSecond: num(rateRaw, "requests_per_second", DEFAULT_RATE_LIMIT.requestsPerSecond, 1e-9, 1e9),
+      burst: num(rateRaw, "burst", DEFAULT_RATE_LIMIT.burst, 1, 1000),
+      maxRetryAfterSeconds: num(rateRaw, "max_retry_after_seconds", DEFAULT_RATE_LIMIT.maxRetryAfterSeconds, 1e-9, 1e9),
+    },
+    breaker: {
+      failureThreshold: num(breakerRaw, "failure_threshold", DEFAULT_BREAKER.failureThreshold, 1, 1000),
+      recoverySeconds: num(breakerRaw, "recovery_seconds", DEFAULT_BREAKER.recoverySeconds, 1e-9, 1e9),
+    },
     queue,
     idempotencyTtlSeconds: num(raw, "idempotency_ttl_seconds", 7 * 24 * 3600, 60, 1e12),
   };
