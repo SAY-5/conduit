@@ -16,24 +16,30 @@ class FaultSpec(BaseModel):
 
     ``rate_limit_tasks`` get HTTP 429 for their first ``rate_limit_count`` calls.
     ``hard_fail_tasks`` always get HTTP 400. ``fail_500_once`` returns one 500 on
-    the first call of any task, then behaves.
+    the first call of any task, then behaves. ``outage`` fails every call with 503
+    until it is cleared, which is what a downstream being down looks like.
     """
 
     rate_limit_tasks: list[str] = Field(default_factory=list)
     rate_limit_count: int = 2
     hard_fail_tasks: list[str] = Field(default_factory=list)
     fail_500_once: bool = False
+    outage: bool = False
 
     @classmethod
     def from_env(cls, prefix: str = "FAKE") -> FaultSpec:
         def split(name: str) -> list[str]:
             return [x for x in os.environ.get(f"{prefix}_{name}", "").split(",") if x]
 
+        def flag(name: str) -> bool:
+            return os.environ.get(f"{prefix}_{name}", "").lower() in {"1", "true"}
+
         return cls(
             rate_limit_tasks=split("RATE_LIMIT_TASKS"),
             rate_limit_count=int(os.environ.get(f"{prefix}_RATE_LIMIT_COUNT", "2")),
             hard_fail_tasks=split("HARD_FAIL_TASKS"),
-            fail_500_once=os.environ.get(f"{prefix}_500_ONCE", "").lower() in {"1", "true"},
+            fail_500_once=flag("500_ONCE"),
+            outage=flag("OUTAGE"),
         )
 
 
@@ -52,6 +58,9 @@ class FakeState:
         with self.lock:
             self.calls += 1
             f = self.faults
+            if f.outage:
+                self.rejected += 1
+                return JSONResponse({**error_body, "reason": "outage"}, status_code=503)
             if task_id in f.hard_fail_tasks:
                 self.rejected += 1
                 return JSONResponse({**error_body, "reason": "hard_fail"}, status_code=400)

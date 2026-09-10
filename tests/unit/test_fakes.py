@@ -69,6 +69,20 @@ def test_fault_injection(specs, fake_clients, name):
     assert adapter.deliver(Task(id="T-3", title="x"), "c" * 64).remote_id
 
 
+@pytest.mark.parametrize("name", ["slack-ops", "jira-support", "webhook-crm"])
+def test_outage_fails_every_call_until_cleared(specs, fake_clients, name):
+    kind = specs[name].type
+    client = fake_clients[kind]
+    adapter = adapter_for(specs, name, client, "http://fake")
+    client.post("/_faults", json={"outage": True})
+    for suffix in ("a", "b"):
+        with pytest.raises(TransientError) as raised:
+            adapter.deliver(Task(id=f"T-{suffix}", title="x"), suffix * 64)
+        assert raised.value.status == 503
+    client.delete("/_faults")
+    assert adapter.deliver(Task(id="T-a", title="x"), "a" * 64).remote_id
+
+
 def test_webhook_fake_dedupes_and_verifies(specs, fake_clients):
     client = fake_clients["webhook"]
     adapter = adapter_for(specs, "webhook-crm", client, "http://fake")
