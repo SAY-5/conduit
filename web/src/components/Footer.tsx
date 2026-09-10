@@ -19,6 +19,17 @@ export function Footer() {
           </ul>
         </div>
       </div>
+      <nav className="wrap footer-links" aria-label="Source and documentation">
+        <a href={REPO} target="_blank" rel="noreferrer">Repository</a>
+        <a href={`${REPO}#readme`} target="_blank" rel="noreferrer">README</a>
+        <a href={`${REPO}/blob/main/ARCHITECTURE.md`} target="_blank" rel="noreferrer">ARCHITECTURE.md</a>
+        <a href={`${REPO}/blob/main/CONTRIBUTING.md`} target="_blank" rel="noreferrer">CONTRIBUTING.md</a>
+        <a href={`${REPO}/tree/main/terraform`} target="_blank" rel="noreferrer">terraform/</a>
+        <a href={`${REPO}/tree/main/terraform/modules`} target="_blank" rel="noreferrer">terraform/modules</a>
+        <a href={`${REPO}/tree/main/connectors`} target="_blank" rel="noreferrer">connectors/</a>
+        <a href={`${REPO}/blob/main/demo/run.py`} target="_blank" rel="noreferrer">demo/run.py</a>
+        <a href={`${REPO}/tree/main/web/src/sim`} target="_blank" rel="noreferrer">web/src/sim</a>
+      </nav>
       <div className="wrap footer-bottom mono">
         <span>conduit · MIT</span>
         <a href={REPO} target="_blank" rel="noreferrer">github.com/SAY-5/conduit</a>

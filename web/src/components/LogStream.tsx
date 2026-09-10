@@ -12,6 +12,8 @@ const KIND_CLASS: Record<string, string> = {
   in_progress: "log-retry",
   submit: "log-claim",
   info: "log-claim",
+  throttle: "log-throttle",
+  breaker: "log-breaker",
 };
 
 export function LogStream({ events, limit = 80, follow = true, label = "worker log (structlog, JSON)" }: { events: LogEvent[]; limit?: number; follow?: boolean; label?: string }) {

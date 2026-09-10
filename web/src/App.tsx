@@ -3,6 +3,7 @@ import { Interface } from "./sections/Interface";
 import { Reliability } from "./sections/Reliability";
 import { Dlq } from "./sections/Dlq";
 import { Ship } from "./sections/Ship";
+import { Run } from "./sections/Run";
 import { Footer } from "./components/Footer";
 
 const REPO = "https://github.com/SAY-5/conduit";
@@ -23,6 +24,7 @@ function Nav() {
           <a href="#reliability">Idempotency + retries</a>
           <a href="#dlq">DLQ + replay</a>
           <a href="#ship">Ship one file</a>
+          <a href="#run">Full run</a>
         </div>
         <a className="btn btn-sm nav-repo" href={REPO} target="_blank" rel="noreferrer">
           SAY-5/conduit
@@ -35,14 +37,15 @@ function Nav() {
 export default function App() {
   return (
     <div id="top">
-      <a className="sr-only" href="#interface">Skip to content</a>
+      <a className="skip-link" href="#main">Skip to content</a>
       <Nav />
-      <main>
+      <main id="main">
         <Hero />
         <Interface />
         <Reliability />
         <Dlq />
         <Ship />
+        <Run />
       </main>
       <Footer />
     </div>

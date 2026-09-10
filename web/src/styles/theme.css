@@ -293,3 +293,34 @@ button, input, textarea, select { font: inherit; color: inherit; }
   .lab { padding: 1.1rem 1rem; }
   .btn { padding: 0.62rem 0.95rem; font-size: 0.88rem; }
 }
+
+/* Skip link: hidden until focused, then a real target above the nav */
+.skip-link {
+  position: absolute;
+  left: 1rem;
+  top: -100px;
+  z-index: 100;
+  padding: 0.7rem 1.1rem;
+  border-radius: 999px;
+  background: var(--teal);
+  color: #06110f;
+  font-weight: 600;
+  transition: top 0.2s var(--ease);
+}
+.skip-link:focus-visible { top: 1rem; text-decoration: none; }
+
+/* Throttle and breaker events in the worker log */
+.log-throttle .ev { color: #9fd0ff; }
+.log-breaker .ev { color: #ffb3aa; }
+
+/* Footer source links */
+.footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.4rem;
+  margin-top: 2.2rem;
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+}
+.footer-links a { color: var(--ivory-2); }
+.footer-links a:hover { color: var(--teal-2); }
