@@ -22,7 +22,12 @@ retry:
   base_seconds: 0.25
   max_seconds: 8
 rate_limit:
-  requests_per_second: 10
+  requests_per_second: 10          # Jira Cloud's per-app budget
+  burst: 5
+  max_retry_after_seconds: 120     # honour Retry-After up to two minutes
+breaker:
+  failure_threshold: 5             # consecutive 5xx or timeouts, not 429
+  recovery_seconds: 30
 queue:
   max_receive_count: 3
   visibility_timeout_seconds: 45

@@ -1,9 +1,10 @@
 # Conduit
 
 Reusable integration connector kit. One adapter interface syncs tasks to Slack, Jira, and
-signed webhooks, with idempotency keys, exponential backoff, and an SQS dead-letter queue per
-connector. Terraform reads the `connectors/` directory, so a new integration ships from one
-YAML file and one `terraform apply`.
+signed webhooks, with idempotency keys, exponential backoff, a token-bucket throttle and
+circuit breaker per connector, and an SQS dead-letter queue. Terraform reads the
+`connectors/` directory, so a new integration ships from one YAML file and one
+`terraform apply`.
 
 Python 3.12, boto3, httpx, pydantic v2, Terraform 1.5, Docker. Runs against LocalStack locally
 and in CI; the same modules target a real AWS account by dropping the endpoint overrides.
@@ -23,6 +24,8 @@ and in CI; the same modules target a real AWS account by dropping the endpoint o
  | worker (one per connector)                                             |
  |   validate(mapping rules) : required/type/enum/length, rejected{reason} |
  |   claim(idempotency key) ----> DynamoDB conditional PutItem + TTL      |
+ |   throttle(token bucket) : rate + burst, Retry-After pauses the source |
+ |   breaker(target failures) : stop polling, hold visibility, one probe  |
  |   retry_call(adapter.deliver) : 429/5xx/timeout retried, 4xx returned  |
  |   /metrics : delivered, deduplicated, rejected, retried, dead_lettered |
  +----------------+----------------------+---------------------------+----+
@@ -68,6 +71,13 @@ retry:
   max_attempts: 4
   base_seconds: 0.25
   max_seconds: 8
+rate_limit:
+  requests_per_second: 10
+  burst: 5
+  max_retry_after_seconds: 120
+breaker:
+  failure_threshold: 5     # consecutive 5xx or timeouts
+  recovery_seconds: 30
 queue:
   max_receive_count: 3
   visibility_timeout_seconds: 45
@@ -83,10 +93,10 @@ acknowledged without delivery, logged with the field and reason, and counted in
 `conduit_rejected_total{reason}` instead of cycling through retries into the DLQ.
 `conduit submit` applies the same rules and refuses the offending tasks up front.
 
-The worker reads the same file to build the adapter, retry policy, and rate limit. Terraform
-reads it to create the queue pair with the redrive policy, a least-privilege IAM policy and role,
-one SSM SecureString placeholder per secret, and a container definition. Adding a fourth
-connector is one file:
+The worker reads the same file to build the adapter, retry policy, rate limit, and breaker.
+Terraform reads it to create the queue pair with the redrive policy, a least-privilege IAM
+policy and role, one SSM SecureString placeholder per secret, and a container definition.
+Adding a fourth connector is one file:
 
 ```yaml
 # connectors/pager-oncall.yaml
@@ -104,11 +114,42 @@ Plan: 7 to add, 0 to change, 0 to destroy.
 `tests/terraform/test_terraform.py` asserts that the plan diff for a new YAML is exactly those
 seven resources.
 
+## Backpressure and rate control
+
+Every connector carries its own token bucket. `acquire` reserves a token and returns the wait
+the worker must sleep before the send is allowed, so the burst goes out immediately and the
+rest are spaced `1 / requests_per_second` apart. Tokens go negative while reservations are
+outstanding, which keeps the spacing exact across a backlog instead of letting a batch escape
+in one go. A 429 with `Retry-After` calls `penalize`, which moves the earliest allowed send
+for the whole connector into the future, capped by `max_retry_after_seconds`; the pause
+applies to every task on that connector, not only the one that was throttled.
+
+A remote that is down is a different problem from one that is busy, so 5xx responses,
+timeouts, and connection errors feed a per-connector circuit breaker while 429 does not.
+After `failure_threshold` consecutive target failures the breaker opens and the worker stops
+polling entirely. Messages it is already holding stay invisible: `_pause_while_open` keeps
+extending their visibility timeout for as long as the pause lasts, so nothing is redelivered
+to a second consumer and nothing burns receive count into the DLQ because the target had an
+outage. After `recovery_seconds` the breaker half-opens and admits exactly one probe. The
+probe succeeding closes it and polling resumes; the probe failing opens it for another
+window.
+
+Both are visible on `/metrics` as `conduit_rate_limit_waits_total`,
+`conduit_rate_limit_wait_seconds_total`, `conduit_retry_after_honored_total`,
+`conduit_breaker_state` (0 closed, 1 half open, 2 open), `conduit_breaker_opens_total`, and
+`conduit_breaker_paused_seconds_total`, and in the worker's `worker.stop` log line.
+
+`tests/integration/test_backpressure.py` proves the three behaviours against LocalStack: six
+sends at five per second arrive over a one-second window, an outage on a fake pauses the
+worker so it consumes nothing and then drains all three tasks once the fault clears, and a
+message held across a pause is never handed to a second receiver even though the queue's
+visibility timeout is shorter than the pause.
+
 ## Quick start
 
 ```
 make setup          # uv sync
-make test-unit      # 112 tests, no Docker
+make test-unit      # 129 tests, no Docker
 make up             # LocalStack + fakes + one worker per connector
 make tf-apply       # terraform apply against LocalStack (23 resources)
 make test           # unit + LocalStack integration + terraform plan tests
@@ -208,6 +249,22 @@ tests/              unit (respx, moto), integration (LocalStack), terraform (pla
 ```
 
 ## Changelog
+
+### v3.0.0
+
+* Token-bucket throttle per connector: `rate_limit.requests_per_second`, `burst`, and
+  `max_retry_after_seconds`. A 429 with `Retry-After` pauses every send on that connector,
+  not only the message that was throttled.
+* Circuit breaker per connector: `breaker.failure_threshold` consecutive 5xx, timeouts, or
+  connection errors stop the worker polling; after `breaker.recovery_seconds` one probe
+  decides whether it resumes. 429 feeds the bucket, not the breaker.
+* Messages held when the breaker opens keep their visibility extended for the length of the
+  pause, so an outage cannot cause a redelivery to a second consumer or burn receive count
+  into the dead-letter queue.
+* `conduit_rate_limit_waits_total`, `conduit_rate_limit_wait_seconds_total`,
+  `conduit_retry_after_honored_total`, `conduit_breaker_state`,
+  `conduit_breaker_opens_total`, and `conduit_breaker_paused_seconds_total` on `/metrics`.
+* The fakes take an `outage` fault that fails every call with 503 until it is cleared.
 
 ### v2.0.0
 

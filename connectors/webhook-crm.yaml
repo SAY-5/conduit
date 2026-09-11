@@ -28,6 +28,10 @@ retry:
   max_seconds: 2
 rate_limit:
   requests_per_second: 50
+  burst: 10
+breaker:
+  failure_threshold: 3             # the CRM is the flakiest target, pause sooner
+  recovery_seconds: 15
 queue:
   max_receive_count: 2
   visibility_timeout_seconds: 20

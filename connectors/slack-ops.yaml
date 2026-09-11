@@ -15,6 +15,10 @@ retry:
   max_seconds: 5
 rate_limit:
   requests_per_second: 20
+  burst: 5
+breaker:
+  failure_threshold: 5
+  recovery_seconds: 20
 queue:
   max_receive_count: 3
   visibility_timeout_seconds: 30
