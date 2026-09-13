@@ -181,7 +181,14 @@ class Worker:
         if not force and now - self._published_at < STATUS_INTERVAL_SECONDS:
             return
         self._published_at = now
-        self.statuses.publish(self.status())
+        status = self.status()
+        self.statuses.publish(status)
+        for service, unit, value in (
+            ("sqs", "requests", status.sqs_requests),
+            ("dynamodb", "writes", status.dynamodb_writes),
+            ("dynamodb", "reads", status.dynamodb_reads),
+        ):
+            metrics.billable_units.labels(self.spec.name, service, unit).set(value)
 
     def _sqs_requests(self) -> int:
         queues = [self.queue] + ([self.quarantine] if self.quarantine is not None else [])

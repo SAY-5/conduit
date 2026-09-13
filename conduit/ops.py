@@ -13,6 +13,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from conduit import metrics
 from conduit.config import ConnectorSpec
 from conduit.core.queue import SqsQueue, queue_exists
 
@@ -143,8 +144,12 @@ def collect(specs: dict[str, ConnectorSpec], sqs: Any, statuses: StatusStore) ->
             ("dlq", spec.dlq_name),
             ("quarantine", spec.quarantine_name),
         ):
-            if queue_exists(queue_name, sqs):
-                setattr(row, attr, depth_of(SqsQueue.by_name(queue_name, sqs)))
+            if not queue_exists(queue_name, sqs):
+                continue
+            depth = depth_of(SqsQueue.by_name(queue_name, sqs))
+            setattr(row, attr, depth)
+            metrics.queue_depth.labels(name, attr, "visible").set(depth.visible)
+            metrics.queue_depth.labels(name, attr, "in_flight").set(depth.in_flight)
         rows.append(row)
     return rows
 

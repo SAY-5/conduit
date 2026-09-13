@@ -42,6 +42,14 @@ breaker_opens = Counter(
 breaker_paused_seconds = Counter(
     "conduit_breaker_paused_seconds_total", "Seconds the worker spent paused by the breaker", LABELS
 )
+queue_depth = Gauge(
+    "conduit_queue_depth", "Messages on a connector's queues", LABELS + ["queue", "visibility"]
+)
+billable_units = Gauge(
+    "conduit_billable_units",
+    "Billable API units this worker run has spent, by service and operation",
+    LABELS + ["service", "unit"],
+)
 latency = Histogram(
     "conduit_delivery_seconds",
     "Wall time from first attempt to acknowledged delivery",

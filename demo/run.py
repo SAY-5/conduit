@@ -17,6 +17,7 @@ import tempfile
 import time
 import uuid
 from collections import Counter
+from dataclasses import asdict
 from pathlib import Path
 
 import boto3
@@ -25,6 +26,7 @@ from conduit.config import load_all
 from conduit.core.idempotency import idempotency_key
 from conduit.core.queue import SqsQueue, list_dead_letters, replay_dead_letters
 from conduit.models import Envelope, Task
+from conduit.ops import StatusStore, collect, render_costs, render_summary
 from conduit.worker import percentile
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -295,6 +297,15 @@ def main() -> int:
     say("terraform plan with a fourth connector YAML")
     plan_summary, plan_created = terraform_plan_for_new_yaml()
 
+    say("reading the ops summary back from SQS and the workers' status rows")
+    statuses = StatusStore(
+        os.environ.get("CONDUIT_TABLE", "conduit-idempotency"),
+        client=boto3.client("dynamodb", endpoint_url=LOCALSTACK, region_name="us-east-1"),
+    )
+    ops_rows = collect(specs, sqs, statuses)
+    ops_summary = render_summary(ops_rows)
+    ops_costs = render_costs(ops_rows)
+
     total_unique = sum(len(v) for v in tasks.values())
     total_dedup = int(sum(delta[n].get("conduit_deduplicated_total", 0) for n in specs))
     total_retried = int(sum(delta[n].get("conduit_retried_total", 0) for n in specs))
@@ -338,6 +349,8 @@ def main() -> int:
         f"  {plan_summary}",
     ]
     lines += [f"  + {addr}" for addr in plan_created]
+    lines += ["", "conduit ops summary"] + [f"  {ln}" for ln in ops_summary.splitlines()]
+    lines += ["", "conduit ops costs"] + [f"  {ln}" for ln in ops_costs.splitlines()]
     lines.append("=" * 72)
     report = "\n".join(lines)
     print(report, flush=True)
@@ -352,6 +365,7 @@ def main() -> int:
                 "replay_metrics": replay_metrics,
                 "dedup_logged": dedup_logged,
                 "dead_letters": dead_ids,
+                "ops": [asdict(r) for r in ops_rows],
                 "plan": {"summary": plan_summary, "created": plan_created},
             },
             indent=2,
