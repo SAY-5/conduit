@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -21,6 +22,7 @@ from conduit.core.ratelimit import TokenBucket
 from conduit.core.retry import DeliveryError, TransientError, retry_call
 from conduit.core.schema import SchemaError, SourceSchema, validate_payload
 from conduit.models import DeliveryResult, DeliveryStatus, QuarantineNote, Task
+from conduit.ops import StatusStore, WorkerStatus
 
 log = structlog.get_logger()
 
@@ -30,6 +32,8 @@ IN_PROGRESS_RECHECK_SECONDS = 10
 # While the breaker is open the worker sleeps in slices this long so a stop
 # request and the visibility heartbeat on held messages both stay responsive.
 BREAKER_PAUSE_SLICE = 1.0
+# The status row is a heartbeat, not a log: rewrite it at most this often.
+STATUS_INTERVAL_SECONDS = 5.0
 
 
 def is_target_failure(err: TransientError) -> bool:
@@ -65,8 +69,11 @@ class Worker:
         *,
         quarantine: SqsQueue | None = None,
         schema: SourceSchema | None = None,
+        statuses: StatusStore | None = None,
+        run_id: str | None = None,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], float] = time.time,
     ) -> None:
         self.spec = spec
         self.adapter = adapter
@@ -74,8 +81,15 @@ class Worker:
         self.queue = queue
         self.quarantine = quarantine
         self.schema = schema
+        self.statuses = statuses
+        self.run_id = run_id or uuid.uuid4().hex[:7].upper()
         self._sleep = sleep
         self._clock = clock
+        self._wall_clock = wall_clock
+        self._started_at = wall_clock()
+        self._published_at = 0.0
+        self.last_error = ""
+        self.last_error_at = 0.0
         self.stats = WorkerStats()
         self.bucket = TokenBucket(
             spec.rate_limit.requests_per_second,
@@ -120,11 +134,57 @@ class Worker:
                         break
                 self.handle(message)
                 handled += 1
+                self.publish_status()
                 if max_messages is not None and handled >= max_messages:
                     stop.set()
                     break
+        self.publish_status(force=True)
         self._log.info("worker.stop", **self.summary())
         return self.stats
+
+    def status(self) -> WorkerStatus:
+        """What this worker would publish right now."""
+        s = self.stats
+        return WorkerStatus(
+            connector=self.spec.name,
+            run_id=self.run_id,
+            started_at=self._started_at,
+            updated_at=self._wall_clock(),
+            received=s.received,
+            delivered=s.delivered,
+            deduplicated=s.deduplicated,
+            quarantined=s.quarantined,
+            retried=s.retried,
+            failed=s.failed,
+            dead_lettered=s.dead_lettered,
+            sqs_requests=self._sqs_requests(),
+            dynamodb_writes=getattr(self.store, "writes", 0),
+            dynamodb_reads=getattr(self.store, "reads", 0),
+            remote_objects=s.delivered,
+            breaker_state=str(self.breaker.state),
+            tokens_available=round(self.bucket.available(), 2),
+            rate_limit_waits=s.rate_limit_waits,
+            last_error=self.last_error,
+            last_error_at=self.last_error_at,
+        )
+
+    def publish_status(self, *, force: bool = False) -> None:
+        """Write the status row, at most once every ``STATUS_INTERVAL_SECONDS``."""
+        if self.statuses is None:
+            return
+        now = self._clock()
+        if not force and now - self._published_at < STATUS_INTERVAL_SECONDS:
+            return
+        self._published_at = now
+        self.statuses.publish(self.status())
+
+    def _sqs_requests(self) -> int:
+        queues = [self.queue] + ([self.quarantine] if self.quarantine is not None else [])
+        return sum(sum(q.requests.values()) for q in queues if hasattr(q, "requests"))
+
+    def _note_error(self, detail: str) -> None:
+        self.last_error = detail[:200]
+        self.last_error_at = self._wall_clock()
 
     def handle(self, message: Message) -> DeliveryResult | None:
         env = message.envelope
@@ -194,6 +254,7 @@ class Worker:
             else:
                 self._note_target_ok(logger)
             self.stats.failed += 1
+            self._note_error(f"{reason} {task.id}: {err}")
             metrics.failed.labels(name, reason).inc()
             will_dead_letter = message.receive_count >= self.spec.queue.max_receive_count
             if will_dead_letter:
@@ -256,6 +317,7 @@ class Worker:
             self.quarantine.send(env.model_copy(update={"quarantine": note}))
         self.queue.delete(message.receipt_handle)
         self.stats.quarantined += 1
+        self._note_error(f"quarantined {env.task.id}: {note.detail}")
         metrics.quarantined.labels(name, note.stage, note.reason).inc()
         logger.warning(
             "delivery.quarantined",

@@ -55,7 +55,11 @@ class IdempotencyStore(Protocol):
 
 
 class DynamoIdempotencyStore:
-    """Conditional-put store; the table has ``pk`` (S) and a TTL on ``expires_at``."""
+    """Conditional-put store; the table has ``pk`` (S) and a TTL on ``expires_at``.
+
+    ``writes`` and ``reads`` count the item operations this handle has made, which
+    is what DynamoDB bills for and what the cost report shows per run.
+    """
 
     def __init__(
         self,
@@ -71,6 +75,8 @@ class DynamoIdempotencyStore:
         self.lease_seconds = lease_seconds
         self._clock = clock
         self._client = client or boto3.client("dynamodb")
+        self.writes = 0
+        self.reads = 0
 
     def claim(self, key: str, *, connector: str, task_id: str) -> ClaimResult:
         now = int(self._clock())
@@ -84,6 +90,7 @@ class DynamoIdempotencyStore:
             "expires_at": {"N": str(now + self.ttl_seconds)},
         }
         try:
+            self.writes += 1
             self._client.put_item(
                 TableName=self.table_name,
                 Item=item,
@@ -100,6 +107,7 @@ class DynamoIdempotencyStore:
         except ClientError as exc:
             if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
                 raise
+        self.reads += 1
         existing = self._client.get_item(
             TableName=self.table_name, Key={"pk": {"S": key}}, ConsistentRead=True
         ).get("Item", {})
@@ -114,6 +122,7 @@ class DynamoIdempotencyStore:
         if remote_id:
             expr += ", remote_id = :rid"
             values[":rid"] = {"S": remote_id}
+        self.writes += 1
         self._client.update_item(
             TableName=self.table_name,
             Key={"pk": {"S": key}},
@@ -122,12 +131,14 @@ class DynamoIdempotencyStore:
             ExpressionAttributeValues=values,
         )
         if remote_id:
+            self.reads += 1
             item = self._client.get_item(
                 TableName=self.table_name, Key={"pk": {"S": key}}, ConsistentRead=True
             ).get("Item", {})
             connector = item.get("connector", {}).get("S")
             task_id = item.get("task_id", {}).get("S")
             if connector and task_id:
+                self.writes += 1
                 self._client.put_item(
                     TableName=self.table_name,
                     Item={
@@ -139,6 +150,7 @@ class DynamoIdempotencyStore:
                 )
 
     def latest(self, connector: str, task_id: str) -> str | None:
+        self.reads += 1
         item = self._client.get_item(
             TableName=self.table_name,
             Key={"pk": {"S": latest_pk(connector, task_id)}},
@@ -148,6 +160,7 @@ class DynamoIdempotencyStore:
 
     def release(self, key: str) -> None:
         """Drop an in-progress claim so a redrive or replay can deliver."""
+        self.writes += 1
         try:
             self._client.delete_item(
                 TableName=self.table_name,

@@ -31,6 +31,7 @@ from conduit.core.queue import (
 )
 from conduit.core.schema import RegistryError, SourceSchema, load_registry, validate_payload
 from conduit.models import Envelope, Task
+from conduit.ops import StatusStore, collect, render_costs, render_summary
 
 app = typer.Typer(help="Sync tasks to Slack, Jira, and webhooks through one adapter interface.")
 dlq_app = typer.Typer(help="Inspect and replay dead letters.")
@@ -38,11 +39,13 @@ quarantine_app = typer.Typer(help="Inspect and redrive payloads that failed vali
 config_app = typer.Typer(help="Validate and inspect connector YAML files.")
 schema_app = typer.Typer(help="Inspect the versioned source schema registry.")
 queues_app = typer.Typer(help="Create queues locally without Terraform.")
+ops_app = typer.Typer(help="Queue depths, worker state, and what a run cost.")
 app.add_typer(dlq_app, name="dlq")
 app.add_typer(quarantine_app, name="quarantine")
 app.add_typer(config_app, name="config")
 app.add_typer(schema_app, name="schema")
 app.add_typer(queues_app, name="queues")
+app.add_typer(ops_app, name="ops")
 
 ConnectorsDir = Annotated[
     Path,
@@ -205,7 +208,15 @@ def worker(
     stop = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stop.set())
-    w = Worker(spec, adapter, store, queue, quarantine=quarantine, schema=schema)
+    w = Worker(
+        spec,
+        adapter,
+        store,
+        queue,
+        quarantine=quarantine,
+        schema=schema,
+        statuses=StatusStore(table, client=aws_client("dynamodb")),
+    )
     try:
         w.run(
             stop=stop,
@@ -317,6 +328,28 @@ def schema_check(schemas_dir: SchemasDir = Path("schemas")) -> None:
             f"fields={len(latest.fields)} "
             f"required={sum(1 for f in latest.fields.values() if f.required)}"
         )
+
+
+@ops_app.command("summary")
+def ops_summary(
+    connectors_dir: ConnectorsDir = Path("connectors"),
+    table: TableName = "conduit-idempotency",
+) -> None:
+    """Queue, dead-letter, and quarantine depths per connector with each worker's state."""
+    specs = load_all(connectors_dir)
+    statuses = StatusStore(table, client=aws_client("dynamodb"))
+    typer.echo(render_summary(collect(specs, aws_client("sqs"), statuses)))
+
+
+@ops_app.command("costs")
+def ops_costs(
+    connectors_dir: ConnectorsDir = Path("connectors"),
+    table: TableName = "conduit-idempotency",
+) -> None:
+    """Objects and items each worker wrote during its current run, priced per million."""
+    specs = load_all(connectors_dir)
+    statuses = StatusStore(table, client=aws_client("dynamodb"))
+    typer.echo(render_costs(collect(specs, aws_client("sqs"), statuses)))
 
 
 @config_app.command("validate")

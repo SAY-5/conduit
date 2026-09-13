@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections import Counter
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -33,9 +34,19 @@ class Message:
 
 
 class SqsQueue:
+    """One queue. ``requests`` counts the API calls made through this handle.
+
+    SQS bills per request, so the count is what a cost report needs; the worker
+    publishes it with the rest of its status.
+    """
+
     def __init__(self, queue_url: str, client: Any | None = None) -> None:
         self.queue_url = queue_url
         self._client = client or aws_client("sqs")
+        self.requests: Counter[str] = Counter()
+
+    def _called(self, api: str) -> None:
+        self.requests[api] += 1
 
     @classmethod
     def by_name(cls, name: str, client: Any | None = None) -> SqsQueue:
@@ -48,6 +59,7 @@ class SqsQueue:
         return self.queue_url.rsplit("/", 1)[-1]
 
     def send(self, envelope: Envelope, delay_seconds: int = 0) -> str:
+        self._called("send_message")
         response = self._client.send_message(
             QueueUrl=self.queue_url,
             MessageBody=envelope.model_dump_json(),
@@ -77,6 +89,7 @@ class SqsQueue:
             }
             for i, env in enumerate(chunk)
         ]
+        self._called("send_message_batch")
         response = self._client.send_message_batch(QueueUrl=self.queue_url, Entries=entries)
         failed = response.get("Failed", [])
         if failed:
@@ -95,6 +108,7 @@ class SqsQueue:
         }
         if visibility is not None:
             params["VisibilityTimeout"] = visibility
+        self._called("receive_message")
         response = self._client.receive_message(**params)
         messages = []
         for raw in response.get("Messages", []):
@@ -109,6 +123,7 @@ class SqsQueue:
         return messages
 
     def extend_visibility(self, receipt_handle: str, seconds: int) -> None:
+        self._called("change_message_visibility")
         self._client.change_message_visibility(
             QueueUrl=self.queue_url,
             ReceiptHandle=receipt_handle,
@@ -116,17 +131,20 @@ class SqsQueue:
         )
 
     def delete(self, receipt_handle: str) -> None:
+        self._called("delete_message")
         self._client.delete_message(QueueUrl=self.queue_url, ReceiptHandle=receipt_handle)
 
     def delete_batch(self, receipt_handles: list[str]) -> None:
         for start in range(0, len(receipt_handles), BATCH):
             chunk = receipt_handles[start : start + BATCH]
+            self._called("delete_message_batch")
             self._client.delete_message_batch(
                 QueueUrl=self.queue_url,
                 Entries=[{"Id": str(i), "ReceiptHandle": rh} for i, rh in enumerate(chunk)],
             )
 
     def depth(self) -> dict[str, int]:
+        self._called("get_queue_attributes")
         attrs = self._client.get_queue_attributes(
             QueueUrl=self.queue_url,
             AttributeNames=[
