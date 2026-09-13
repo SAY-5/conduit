@@ -91,6 +91,11 @@ class Worker:
         self.last_error = ""
         self.last_error_at = 0.0
         self.stats = WorkerStats()
+        # A store or queue handle can outlive one run, so the counts this worker
+        # reports are deltas from where they stood when it started.
+        self._base_writes = getattr(store, "writes", 0)
+        self._base_reads = getattr(store, "reads", 0)
+        self._base_sqs = self._sqs_requests()
         self.bucket = TokenBucket(
             spec.rate_limit.requests_per_second,
             spec.rate_limit.burst,
@@ -157,9 +162,9 @@ class Worker:
             retried=s.retried,
             failed=s.failed,
             dead_lettered=s.dead_lettered,
-            sqs_requests=self._sqs_requests(),
-            dynamodb_writes=getattr(self.store, "writes", 0),
-            dynamodb_reads=getattr(self.store, "reads", 0),
+            sqs_requests=self._sqs_requests() - self._base_sqs,
+            dynamodb_writes=getattr(self.store, "writes", 0) - self._base_writes,
+            dynamodb_reads=getattr(self.store, "reads", 0) - self._base_reads,
             remote_objects=s.delivered,
             breaker_state=str(self.breaker.state),
             tokens_available=round(self.bucket.available(), 2),
