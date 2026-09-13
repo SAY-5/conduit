@@ -1,0 +1,15 @@
+# The CRM ingests whole records, so version and status have to be readable.
+fields:
+  id:
+    type: string
+    required: true
+    max_length: 256
+  title:
+    type: string
+    required: true
+  version:
+    type: integer
+    required: true
+  status:
+    type: string
+    enum: [open, in_progress, blocked, done, closed]

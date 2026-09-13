@@ -11,6 +11,7 @@ from conduit.config import ConnectorSpec, FieldRule, QueueSpec, RetryPolicy
 from conduit.core.idempotency import MemoryIdempotencyStore, idempotency_key
 from conduit.core.queue import Message
 from conduit.core.retry import PermanentError, TransientError
+from conduit.core.schema import SchemaField, SourceSchema
 from conduit.models import DeliveryResult, DeliveryStatus, Envelope, Task
 from conduit.worker import Worker, percentile
 
@@ -102,10 +103,18 @@ def envelope(spec: ConnectorSpec, task_id: str, version: int = 1) -> Envelope:
     )
 
 
-def make_worker(spec, script):
+def make_worker(spec, script, *, quarantine=None, schema=None):
     queue = FakeQueue(spec.queue.max_receive_count)
     adapter = ScriptedAdapter(spec, script)
-    worker = Worker(spec, adapter, MemoryIdempotencyStore(), queue, sleep=lambda _: None)
+    worker = Worker(
+        spec,
+        adapter,
+        MemoryIdempotencyStore(),
+        queue,
+        quarantine=quarantine,
+        schema=schema,
+        sleep=lambda _: None,
+    )
     return worker, queue, adapter
 
 
@@ -183,20 +192,53 @@ def test_replayed_dead_letter_delivers_after_fix(spec):
     assert stats.delivered == 1 and len(adapter.calls) == 3
 
 
-def test_invalid_task_is_rejected_before_claim_and_acknowledged(spec):
+def test_invalid_task_is_quarantined_before_claim_and_acknowledged(spec):
     rules = {"owner": FieldRule(source="assignee", required=True)}
     spec = spec.model_copy(update={"mapping": rules})
-    worker, queue, adapter = make_worker(spec, {})
-    before = metrics.rejected.labels(spec.name, "required")._value.get()
+    quarantine = FakeQueue(spec.queue.max_receive_count)
+    worker, queue, adapter = make_worker(spec, {}, quarantine=quarantine)
+    before = metrics.quarantined.labels(spec.name, "mapping", "required")._value.get()
     queue.send(envelope(spec, "A"))
     result = worker.handle(queue.receive()[0])
-    assert result.status == DeliveryStatus.REJECTED and "owner" in result.detail
+    assert result.status == DeliveryStatus.QUARANTINED and "owner" in result.detail
     assert adapter.calls == [] and len(queue.deleted) == 1 and queue.dlq == []
-    assert worker.stats.rejected == 1 and worker.summary()["rejected"] == 1
-    assert metrics.rejected.labels(spec.name, "required")._value.get() == before + 1
+    assert worker.stats.quarantined == 1 and worker.summary()["quarantined"] == 1
+    assert metrics.quarantined.labels(spec.name, "mapping", "required")._value.get() == before + 1
+    assert [env.task.id for env, _ in quarantine.pending] == ["A"]
     assert worker.store.claim(
         envelope(spec, "A").idempotency_key, connector=spec.name, task_id="A"
     ).acquired
+
+
+def test_schema_failure_is_quarantined_before_the_mapping_runs(spec):
+    schema = SourceSchema(
+        connector=spec.name,
+        version=1,
+        fields={"fields.region": SchemaField(type="string", required=True)},
+    )
+    quarantine = FakeQueue(spec.queue.max_receive_count)
+    worker, queue, adapter = make_worker(spec, {}, quarantine=quarantine, schema=schema)
+    queue.send(envelope(spec, "A"))
+    result = worker.handle(queue.receive()[0])
+    assert result.status == DeliveryStatus.QUARANTINED
+    assert "schema missing" in result.detail and "fields.region" in result.detail
+    assert adapter.calls == [] and queue.dlq == []
+    note = next(env.quarantine for env, _ in quarantine.pending)
+    assert note.stage == "schema" and note.reason == "missing"
+
+
+def test_a_task_that_matches_the_schema_is_delivered(spec):
+    schema = SourceSchema(
+        connector=spec.name,
+        version=1,
+        fields={"title": SchemaField(type="string", required=True)},
+    )
+    quarantine = FakeQueue(spec.queue.max_receive_count)
+    worker, queue, adapter = make_worker(spec, {}, quarantine=quarantine, schema=schema)
+    queue.send(envelope(spec, "A"))
+    stats = worker.run(idle_polls=1, wait_seconds=0)
+    assert stats.delivered == 1 and stats.quarantined == 0
+    assert list(quarantine.pending) == []
 
 
 def test_in_progress_elsewhere_is_left_alone(spec):

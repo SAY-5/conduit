@@ -1,4 +1,4 @@
-"""``conduit`` command line: submit, worker, dlq, config."""
+"""``conduit`` command line: submit, worker, dlq, quarantine, schema, config."""
 
 from __future__ import annotations
 
@@ -25,21 +25,32 @@ from conduit.core.queue import (
     aws_client,
     ensure_queues,
     list_dead_letters,
+    list_quarantined,
+    redrive_quarantined,
     replay_dead_letters,
 )
+from conduit.core.schema import RegistryError, SourceSchema, load_registry, validate_payload
 from conduit.models import Envelope, Task
 
 app = typer.Typer(help="Sync tasks to Slack, Jira, and webhooks through one adapter interface.")
 dlq_app = typer.Typer(help="Inspect and replay dead letters.")
+quarantine_app = typer.Typer(help="Inspect and redrive payloads that failed validation.")
 config_app = typer.Typer(help="Validate and inspect connector YAML files.")
+schema_app = typer.Typer(help="Inspect the versioned source schema registry.")
 queues_app = typer.Typer(help="Create queues locally without Terraform.")
 app.add_typer(dlq_app, name="dlq")
+app.add_typer(quarantine_app, name="quarantine")
 app.add_typer(config_app, name="config")
+app.add_typer(schema_app, name="schema")
 app.add_typer(queues_app, name="queues")
 
 ConnectorsDir = Annotated[
     Path,
     typer.Option("--connectors-dir", envvar="CONDUIT_CONNECTORS_DIR", help="Directory of YAMLs"),
+]
+SchemasDir = Annotated[
+    Path,
+    typer.Option("--schemas-dir", envvar="CONDUIT_SCHEMAS_DIR", help="Directory of source schemas"),
 ]
 TableName = Annotated[
     str, typer.Option("--table", envvar="CONDUIT_TABLE", help="DynamoDB idempotency table")
@@ -70,6 +81,14 @@ def _spec(connectors_dir: Path, name: str) -> ConnectorSpec:
         typer.echo(f"unknown connector {name!r}; known: {sorted(specs)}", err=True)
         raise typer.Exit(2)
     return specs[name]
+
+
+def _schema(schemas_dir: Path, connector: str) -> SourceSchema | None:
+    try:
+        return load_registry(schemas_dir).latest(connector)
+    except RegistryError as exc:
+        typer.echo(f"schema error: {exc}", err=True)
+        raise typer.Exit(2) from exc
 
 
 def _queue_with_wait(name: str, wait_seconds: int) -> SqsQueue:
@@ -109,19 +128,23 @@ def submit(
     file: Annotated[Path, typer.Argument(exists=True, help="JSON, JSONL, or CSV of tasks")],
     connector: Annotated[str, typer.Option("--connector", "-c")],
     connectors_dir: ConnectorsDir = Path("connectors"),
+    schemas_dir: SchemasDir = Path("schemas"),
     repeat: Annotated[int, typer.Option(help="Submit each task this many times")] = 1,
 ) -> None:
     """Enqueue tasks for one connector; every task gets a deterministic idempotency key.
 
-    Tasks that fail the connector's mapping rules are reported and left out; the
-    command exits 1 when any were rejected so a pipeline notices.
+    Tasks that fail the connector's source schema or mapping rules are reported
+    and left out; the command exits 1 when any were rejected so a pipeline
+    notices. Nothing reaches the queue, so nothing reaches quarantine either.
     """
     spec = _spec(connectors_dir, connector)
+    schema = _schema(schemas_dir, connector)
     tasks = _read_tasks(file)
     accepted = []
     rejected = 0
     for t in tasks:
-        problem = validate_task(spec, t)
+        problem = validate_payload(schema, t) if schema is not None else None
+        problem = problem or validate_task(spec, t)
         if problem is None:
             accepted.append(t)
             continue
@@ -150,6 +173,7 @@ def submit(
 def worker(
     connector: Annotated[str, typer.Option("--connector", "-c")],
     connectors_dir: ConnectorsDir = Path("connectors"),
+    schemas_dir: SchemasDir = Path("schemas"),
     table: TableName = "conduit-idempotency",
     metrics_port: Annotated[int, typer.Option(envvar="CONDUIT_METRICS_PORT")] = 9100,
     max_messages: Annotated[int | None, typer.Option(help="Exit after N messages")] = None,
@@ -174,12 +198,14 @@ def worker(
         table, ttl_seconds=spec.idempotency_ttl_seconds, client=aws_client("dynamodb")
     )
     queue = _queue_with_wait(spec.queue_name, wait_for_queue)
+    quarantine = _queue_with_wait(spec.quarantine_name, wait_for_queue)
+    schema = _schema(schemas_dir, connector)
     if metrics_port > 0:
         metrics.serve(metrics_port)
     stop = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stop.set())
-    w = Worker(spec, adapter, store, queue)
+    w = Worker(spec, adapter, store, queue, quarantine=quarantine, schema=schema)
     try:
         w.run(
             stop=stop,
@@ -231,8 +257,73 @@ def dlq_replay(
     typer.echo(f"replayed {moved} messages from {spec.dlq_name} to {spec.queue_name}")
 
 
+@quarantine_app.command("list")
+def quarantine_list(
+    connector: Annotated[str, typer.Option("--connector", "-c")],
+    connectors_dir: ConnectorsDir = Path("connectors"),
+    limit: int = 100,
+) -> None:
+    """Show quarantined payloads and the note that set each one aside."""
+    spec = _spec(connectors_dir, connector)
+    messages = list_quarantined(SqsQueue.by_name(spec.quarantine_name), limit=limit)
+    for m in messages:
+        note = m.envelope.quarantine
+        typer.echo(
+            json.dumps(
+                {
+                    "task_id": m.envelope.task.id,
+                    "version": m.envelope.task.version,
+                    "stage": note.stage if note else "",
+                    "field": note.field if note else "",
+                    "reason": note.reason if note else "",
+                    "detail": note.detail if note else "",
+                }
+            )
+        )
+    typer.echo(f"{len(messages)} quarantined in {spec.quarantine_name}", err=True)
+
+
+@quarantine_app.command("redrive")
+def quarantine_redrive(
+    connector: Annotated[str, typer.Option("--connector", "-c")],
+    connectors_dir: ConnectorsDir = Path("connectors"),
+    limit: int | None = None,
+) -> None:
+    """Move quarantined payloads back onto the connector queue after a fix."""
+    spec = _spec(connectors_dir, connector)
+    moved = redrive_quarantined(
+        SqsQueue.by_name(spec.quarantine_name), SqsQueue.by_name(spec.queue_name), limit=limit
+    )
+    typer.echo(f"redrove {moved} messages from {spec.quarantine_name} to {spec.queue_name}")
+
+
+@schema_app.command("check")
+def schema_check(schemas_dir: SchemasDir = Path("schemas")) -> None:
+    """Load every version and report the registry; exits 2 on a breaking change."""
+    try:
+        registry = load_registry(schemas_dir)
+    except RegistryError as exc:
+        typer.echo(f"breaking: {exc}", err=True)
+        raise typer.Exit(2) from exc
+    names = registry.connectors()
+    if not names:
+        typer.echo(f"no schemas in {schemas_dir}")
+        return
+    for name in names:
+        history = registry.history(name)
+        latest = history[-1]
+        typer.echo(
+            f"ok  {name:<16} versions=1..{latest.version} "
+            f"fields={len(latest.fields)} "
+            f"required={sum(1 for f in latest.fields.values() if f.required)}"
+        )
+
+
 @config_app.command("validate")
-def config_validate(connectors_dir: ConnectorsDir = Path("connectors")) -> None:
+def config_validate(
+    connectors_dir: ConnectorsDir = Path("connectors"),
+    schemas_dir: SchemasDir = Path("schemas"),
+) -> None:
     """Parse every YAML and report each connector's type, target, and queue names."""
     try:
         specs = load_all(connectors_dir)
@@ -240,11 +331,13 @@ def config_validate(connectors_dir: ConnectorsDir = Path("connectors")) -> None:
         typer.echo(f"invalid: {exc}", err=True)
         raise typer.Exit(2) from exc
     for spec in specs.values():
+        schema = _schema(schemas_dir, spec.name)
         typer.echo(
             f"ok  {spec.name:<16} {spec.type:<8} target={spec.target} "
             f"queue={spec.queue_name} dlq={spec.dlq_name} "
+            f"quarantine={spec.quarantine_name} "
             f"max_receive={spec.queue.max_receive_count} attempts={spec.retry.max_attempts} "
-            f"mapping={len(spec.mapping)}"
+            f"mapping={len(spec.mapping)} schema={f'v{schema.version}' if schema else 'none'}"
         )
 
 
@@ -268,8 +361,8 @@ def queues_ensure(
     specs = load_all(connectors_dir)
     sqs = aws_client("sqs")
     for spec in specs.values():
-        q, d = ensure_queues(spec, sqs)
-        typer.echo(f"{spec.name}: {q.queue_url} -> {d.queue_url}")
+        q, d, quarantine = ensure_queues(spec, sqs)
+        typer.echo(f"{spec.name}: {q.queue_url} -> {d.queue_url}, {quarantine.queue_url}")
     DynamoIdempotencyStore(table, client=aws_client("dynamodb")).ensure_table()
     typer.echo(f"table {table} ready")
 

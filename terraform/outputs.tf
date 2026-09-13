@@ -1,10 +1,11 @@
 output "connectors" {
-  description = "Queue, DLQ, and policy per connector."
+  description = "Queue, DLQ, quarantine queue, and policy per connector."
   value = {
     for name, mod in module.connector : name => {
       type              = mod.type
       queue_url         = mod.queue_url
       dlq_url           = mod.dlq_url
+      quarantine_url    = mod.quarantine_url
       max_receive_count = mod.max_receive_count
       policy_arn        = mod.policy_arn
       role_arn          = mod.role_arn

@@ -368,7 +368,7 @@ def main() -> int:
         problems.append("replay did not drain the DLQ")
     if any(delivered[n] != UNIQUE_PER_CONNECTOR for n in ("slack-ops", "jira-support")):
         problems.append(f"delivered {delivered}")
-    if len(plan_created) != 7 or "7 to add" not in plan_summary:
+    if len(plan_created) != 8 or "8 to add" not in plan_summary:
         problems.append(f"unexpected plan: {plan_summary}")
     if problems:
         print("DEMO CHECKS FAILED: " + "; ".join(problems), file=sys.stderr)

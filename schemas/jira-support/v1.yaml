@@ -1,0 +1,14 @@
+# The first contract: an issue needs an id, a title, and a known priority.
+fields:
+  id:
+    type: string
+    required: true
+    max_length: 256
+  title:
+    type: string
+    required: true
+  priority:
+    type: string
+    enum: [low, normal, high]
+  fields.region:
+    type: string

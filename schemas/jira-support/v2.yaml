@@ -1,0 +1,16 @@
+# Compatible with v1: urgent joins the priority enum and reporter is optional.
+fields:
+  id:
+    type: string
+    required: true
+    max_length: 256
+  title:
+    type: string
+    required: true
+  priority:
+    type: string
+    enum: [low, normal, high, urgent]
+  fields.region:
+    type: string
+  fields.reporter:
+    type: string

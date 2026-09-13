@@ -1,6 +1,6 @@
 [project]
 name = "conduit"
-version = "3.0.0"
+version = "4.0.0"
 description = "Reusable integration connector kit: one adapter interface for Slack, Jira, and webhooks with idempotency keys, backoff retries, an SQS dead-letter queue, and Terraform so a new integration ships from one config file"
 readme = "README.md"
 requires-python = ">=3.12"

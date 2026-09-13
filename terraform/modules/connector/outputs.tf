@@ -10,6 +10,10 @@ output "dlq_url" {
   value = module.queue.dlq_url
 }
 
+output "quarantine_url" {
+  value = module.queue.quarantine_url
+}
+
 output "max_receive_count" {
   value = try(local.queue_spec.max_receive_count, 3)
 }

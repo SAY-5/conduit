@@ -16,6 +16,7 @@ locals {
     environment = [
       { name = "AWS_DEFAULT_REGION", value = var.aws_region },
       { name = "CONDUIT_CONNECTORS_DIR", value = "/app/connectors" },
+      { name = "CONDUIT_SCHEMAS_DIR", value = "/app/schemas" },
       { name = "CONDUIT_TABLE", value = var.idempotency_table_name },
       { name = "CONDUIT_METRICS_PORT", value = tostring(local.metric_port) },
     ]
@@ -75,7 +76,7 @@ data "aws_iam_policy_document" "worker" {
       "sqs:SendMessage",
       "sqs:SendMessageBatch",
     ]
-    resources = [module.queue.queue_arn, module.queue.dlq_arn]
+    resources = [module.queue.queue_arn, module.queue.dlq_arn, module.queue.quarantine_arn]
   }
 
   statement {

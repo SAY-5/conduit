@@ -13,3 +13,11 @@ output "dlq_url" {
 output "dlq_arn" {
   value = aws_sqs_queue.dlq.arn
 }
+
+output "quarantine_url" {
+  value = aws_sqs_queue.quarantine.id
+}
+
+output "quarantine_arn" {
+  value = aws_sqs_queue.quarantine.arn
+}

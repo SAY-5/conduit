@@ -18,7 +18,9 @@ COPY --from=builder --chown=conduit:conduit /app/.venv /app/.venv
 COPY --chown=conduit:conduit conduit ./conduit
 COPY --chown=conduit:conduit fakes ./fakes
 COPY --chown=conduit:conduit connectors ./connectors
-ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1 CONDUIT_CONNECTORS_DIR=/app/connectors
+COPY --chown=conduit:conduit schemas ./schemas
+ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1 CONDUIT_CONNECTORS_DIR=/app/connectors \
+    CONDUIT_SCHEMAS_DIR=/app/schemas
 USER conduit
 EXPOSE 9100
 ENTRYPOINT []

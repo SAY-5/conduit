@@ -147,6 +147,10 @@ class ConnectorSpec(BaseModel):
     def dlq_name(self) -> str:
         return f"conduit-{self.name}-dlq"
 
+    @property
+    def quarantine_name(self) -> str:
+        return f"conduit-{self.name}-quarantine"
+
 
 class ConfigError(ValueError):
     pass

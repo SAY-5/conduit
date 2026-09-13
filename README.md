@@ -2,9 +2,9 @@
 
 Reusable integration connector kit. One adapter interface syncs tasks to Slack, Jira, and
 signed webhooks, with idempotency keys, exponential backoff, a token-bucket throttle and
-circuit breaker per connector, and an SQS dead-letter queue. Terraform reads the
-`connectors/` directory, so a new integration ships from one YAML file and one
-`terraform apply`.
+circuit breaker per connector, versioned source schemas, and an SQS dead-letter queue beside
+a quarantine queue for payloads that will never be valid. Terraform reads the `connectors/`
+directory, so a new integration ships from one YAML file and one `terraform apply`.
 
 Python 3.12, boto3, httpx, pydantic v2, Terraform 1.5, Docker. Runs against LocalStack locally
 and in CI; the same modules target a real AWS account by dropping the endpoint overrides.
@@ -20,14 +20,17 @@ and in CI; the same modules target a real AWS account by dropping the endpoint o
  +---------------------+                         +--------------------------+
         |  long poll, visibility extension                 ^   conduit dlq list | replay
         v                                                  |
- +---------------------------------------------------------+-------------+
- | worker (one per connector)                                             |
- |   validate(mapping rules) : required/type/enum/length, rejected{reason} |
- |   claim(idempotency key) ----> DynamoDB conditional PutItem + TTL      |
- |   throttle(token bucket) : rate + burst, Retry-After pauses the source |
- |   breaker(target failures) : stop polling, hold visibility, one probe  |
- |   retry_call(adapter.deliver) : 429/5xx/timeout retried, 4xx returned  |
- |   /metrics : delivered, deduplicated, rejected, retried, dead_lettered |
+ +---------------------------------------------------------+---------------+
+ | worker (one per connector)                                              |
+ |   check(source schema) : versioned registry, first violation wins       |
+ |   check(mapping rules) : required/type/enum/length                      |
+ |     either failure ----> SQS conduit-<name>-quarantine {stage, reason}  |
+ |     conduit quarantine list | redrive                                   |
+ |   claim(idempotency key) ----> DynamoDB conditional PutItem + TTL       |
+ |   throttle(token bucket) : rate + burst, Retry-After pauses the source  |
+ |   breaker(target failures) : stop polling, hold visibility, one probe   |
+ |   retry_call(adapter.deliver) : 429/5xx/timeout retried, 4xx returned   |
+ |   /metrics : delivered, deduplicated, quarantined, retried, dead_letter |
  +----------------+----------------------+---------------------------+----+
                   |                      |                           |
                   v                      v                           v
@@ -35,9 +38,10 @@ and in CI; the same modules target a real AWS account by dropping the endpoint o
         chat.postMessage        REST v3 issue upsert       HMAC-SHA256 signed POST
         Block Kit + metadata    summary tag, no JQL        Idempotency-Key header
 
- connectors/*.yaml  --fileset + yamldecode + for_each-->  terraform (queue, dlq, redrive,
-                                                          IAM policy/role, SSM params,
-                                                          container definition)
+ connectors/*.yaml        --fileset + yamldecode + for_each--> terraform (queue, dlq,
+ schemas/<name>/v<N>.yaml --a registry that refuses a------->  quarantine, redrive, IAM
+                            breaking change at load time      policy/role, SSM params,
+                                                              container definition)
 ```
 
 Idempotency key = `sha256("v1|connector|task_id|task_version")`. A resubmit of the same task
@@ -88,13 +92,13 @@ A mapping value is either a bare source (`description: body`, a dotted task path
 `integer`, `number`, `boolean`, `list`, or `any`), `required`, `enum`, `default`,
 `max_length`, and `truncate`. Defaults fill missing values, types are coerced, and an
 overlong value is cut or rejected depending on `truncate`. The worker checks every task
-against the rules before it claims an idempotency key: a task that cannot fit is
-acknowledged without delivery, logged with the field and reason, and counted in
-`conduit_rejected_total{reason}` instead of cycling through retries into the DLQ.
+against the rules before it claims an idempotency key: a task that cannot fit is moved to the
+connector's quarantine queue with the field and reason, and counted in
+`conduit_quarantined_total{stage,reason}`, instead of cycling through retries into the DLQ.
 `conduit submit` applies the same rules and refuses the offending tasks up front.
 
 The worker reads the same file to build the adapter, retry policy, rate limit, and breaker.
-Terraform reads it to create the queue pair with the redrive policy, a least-privilege IAM
+Terraform reads it to create the three queues with the redrive policy, a least-privilege IAM
 policy and role, one SSM SecureString placeholder per secret, and a container definition.
 Adding a fourth connector is one file:
 
@@ -108,11 +112,73 @@ secrets:
 
 ```
 $ terraform -chdir=terraform plan -var-file=localstack.tfvars
-Plan: 7 to add, 0 to change, 0 to destroy.
+Plan: 8 to add, 0 to change, 0 to destroy.
 ```
 
 `tests/terraform/test_terraform.py` asserts that the plan diff for a new YAML is exactly those
-seven resources.
+eight resources.
+
+## Source schemas and quarantine
+
+Mapping rules describe the remote side of a connector. A schema describes the source side: what
+the producer promised to send. They live in `schemas/<connector>/v<N>.yaml` and are loaded as an
+ordered registry.
+
+```yaml
+# schemas/jira-support/v2.yaml
+fields:
+  id:
+    type: string
+    required: true
+    max_length: 256
+  title:
+    type: string
+    required: true
+  priority:
+    type: string
+    enum: [low, normal, high, urgent]   # v1 had no urgent; widening is compatible
+  fields.region:
+    type: string
+  fields.reporter:                      # new and optional, so v1 payloads still fit
+    type: string
+```
+
+Loading refuses a breaking change between consecutive versions. A new version may loosen what
+it accepts and never tighten it, because tightening would quarantine payloads the previous
+version let through: making a field required, narrowing its type, introducing an enum or
+dropping values from one, and introducing or lowering a `max_length` are all refused. Dropping
+a field, relaxing `required`, widening to `any` or `integer` to `number`, adding enum values,
+and adding an optional field are all accepted.
+
+```
+$ conduit schema check
+ok  jira-support     versions=1..2 fields=5 required=2
+ok  slack-ops        versions=1..1 fields=4 required=2
+ok  webhook-crm      versions=1..1 fields=4 required=3
+```
+
+A payload that fails the schema, or the mapping rules after it, is moved to
+`conduit-<name>-quarantine` carrying a note with the stage, field, reason, and detail. That
+queue is deliberately not the dead-letter queue: the DLQ holds deliveries the handler could
+not complete after `maxReceiveCount` receives and is replayed once the target is healthy,
+while quarantine holds payloads that will never be delivered as they stand and is redriven
+once the producer or the schema is fixed. Neither ever feeds the other.
+
+```
+$ conduit quarantine list -c jira-support
+{"task_id": "T-91", "version": 1, "stage": "schema", "field": "priority", "reason": "enum", "detail": "priority: 'critical' is not one of ['low', 'normal', 'high', 'urgent']"}
+1 quarantined in conduit-jira-support-quarantine
+$ conduit quarantine redrive -c jira-support
+redrove 1 messages from conduit-jira-support-quarantine to conduit-jira-support
+```
+
+`redrive` moves what the queue held when it started, not what arrives while it runs: a worker
+that still rejects the payload quarantines it again inside the call, and an unbounded drain
+would chase those forever. Run it after the fix, not before.
+
+A redriven message keeps its idempotency key and loses its note, so a task that was quarantined
+and then fixed is still delivered exactly once. `conduit submit` applies the same schema before
+anything is enqueued, so a bad file is rejected at the door rather than quarantined later.
 
 ## Backpressure and rate control
 
@@ -149,9 +215,9 @@ visibility timeout is shorter than the pause.
 
 ```
 make setup          # uv sync
-make test-unit      # 129 tests, no Docker
+make test-unit      # 159 tests, no Docker
 make up             # LocalStack + fakes + one worker per connector
-make tf-apply       # terraform apply against LocalStack (23 resources)
+make tf-apply       # terraform apply against LocalStack (26 resources)
 make test           # unit + LocalStack integration + terraform plan tests
 make demo           # everything below
 make demo-down
@@ -184,7 +250,7 @@ DLQ replay             10 replayed after clearing the fault; DLQ now 0; webhook 
 delivery latency       p50 1.0 ms, p95 454.0 ms (worker attempt-to-ack, n=230)
 end-to-end latency     p50 2.43 s, p95 14.35 s (submit-to-remote-receipt, n=230); queues drained in 19.4s
 new integration from one file (connectors/pager-oncall.yaml, 10 lines):
-  Plan: 7 to add, 0 to change, 0 to destroy.
+  Plan: 8 to add, 0 to change, 0 to destroy.
   + module.connector["pager-oncall"].aws_iam_policy.worker
   + module.connector["pager-oncall"].aws_iam_role.worker
   + module.connector["pager-oncall"].aws_iam_role_policy_attachment.worker
@@ -206,7 +272,7 @@ retries; per-attempt delivery latency is the worker's own measurement.
 `web/` is a static page that runs the same demo without Docker: `web/src/sim` ports the worker,
 idempotency store, queue, retry policy, token bucket, and Terraform resource set to TypeScript,
 driven by a seeded PRNG and a virtual clock. `npm run selfcheck` in `web/` reproduces the
-figures above (60 deduplicated, 10 dead-lettered then replayed to 0, seven resources planned for
+figures above (60 deduplicated, 10 dead-lettered then replayed to 0, resources planned for
 a fourth connector YAML) as 42 assertions in Node. See [web/README.md](web/README.md).
 
 ## LocalStack, not AWS
@@ -249,6 +315,26 @@ tests/              unit (respx, moto), integration (LocalStack), terraform (pla
 ```
 
 ## Changelog
+
+### v4.0.0
+
+* Per-connector source schemas in `schemas/<connector>/v<N>.yaml`, loaded as a versioned
+  registry. Fields are checked as they arrive, never coerced, and the first violation wins.
+* Loading refuses a breaking change between consecutive versions: making a field required,
+  narrowing a type, introducing or shrinking an enum, and introducing or lowering a
+  `max_length` are all rejected. `conduit schema check` reports the registry and exits 2 on a
+  break.
+* A third queue per connector, `conduit-<name>-quarantine`, created by Terraform alongside the
+  work queue and the DLQ. Payloads that fail the schema or the mapping rules go there with a
+  note recording the stage, field, reason, and detail, instead of being acknowledged and
+  dropped as they were in v2.
+* `conduit quarantine list` and `conduit quarantine redrive`; a redriven message keeps its
+  idempotency key and loses its note. `redrive` is bounded by the depth it saw when it started
+  so it cannot chase re-quarantined messages.
+* `conduit_rejected_total{reason}` is replaced by `conduit_quarantined_total{stage,reason}`,
+  the worker stat `rejected` by `quarantined`, and `DeliveryStatus.REJECTED` by
+  `QUARANTINED`. `conduit submit` still rejects at the door, which is the case where nothing
+  was ever enqueued.
 
 ### v3.0.0
 

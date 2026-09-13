@@ -1,6 +1,16 @@
-# A work queue and its dead-letter queue joined by a redrive policy. After
-# max_receive_count failed receives SQS moves the message to the DLQ; the
-# worker never acknowledges a failed delivery, so exhaustion is the only path in.
+# A work queue, its dead-letter queue joined by a redrive policy, and a
+# quarantine queue. After max_receive_count failed receives SQS moves the
+# message to the DLQ; the worker never acknowledges a failed delivery, so
+# exhaustion is the only path in. Quarantine is the other direction: the worker
+# puts a payload there itself when it fails schema or mapping validation, so the
+# two never mix and each is drained by its own command.
+resource "aws_sqs_queue" "quarantine" {
+  name                      = "${var.name}-quarantine"
+  message_retention_seconds = var.dlq_retention_seconds
+  sqs_managed_sse_enabled   = true
+  tags                      = var.tags
+}
+
 resource "aws_sqs_queue" "dlq" {
   name                      = "${var.name}-dlq"
   message_retention_seconds = var.dlq_retention_seconds

@@ -18,6 +18,7 @@ from conduit.adapters import build_adapter
 from conduit.config import ConnectorSpec
 from conduit.core.idempotency import DynamoIdempotencyStore, idempotency_key
 from conduit.core.queue import SqsQueue, ensure_queues
+from conduit.core.schema import SourceSchema
 from conduit.models import Envelope, Task
 from conduit.worker import Worker
 
@@ -107,6 +108,7 @@ class Rig:
     spec: ConnectorSpec
     queue: SqsQueue
     dlq: SqsQueue
+    quarantine: SqsQueue
     fake: FakeServer
     store: DynamoIdempotencyStore
     worker: Worker
@@ -127,9 +129,9 @@ class Rig:
 
 @pytest.fixture
 def rig_factory(specs, fakes, aws, store, monkeypatch):
-    """Build an isolated queue pair + worker for a shipped connector, pointed at a fake."""
+    """Build an isolated queue set + worker for a shipped connector, pointed at a fake."""
 
-    def make(name: str, **overrides) -> Rig:
+    def make(name: str, schema: SourceSchema | None = None, **overrides) -> Rig:
         base = specs[name]
         fake = fakes[base.type]
         suffix = uuid.uuid4().hex[:8]
@@ -140,12 +142,12 @@ def rig_factory(specs, fakes, aws, store, monkeypatch):
             update["base_url"] = fake.base_url
         update.update(overrides)
         spec = base.model_copy(update=update)
-        queue, dlq = ensure_queues(spec, aws["sqs"])
+        queue, dlq, quarantine = ensure_queues(spec, aws["sqs"])
         adapter = build_adapter(spec)
-        worker = Worker(spec, adapter, store, queue)
+        worker = Worker(spec, adapter, store, queue, quarantine=quarantine, schema=schema)
         fake.clear_faults()
         fake.client.delete("/_inbox")
-        return Rig(spec, queue, dlq, fake, store, worker)
+        return Rig(spec, queue, dlq, quarantine, fake, store, worker)
 
     return make
 

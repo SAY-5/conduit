@@ -36,6 +36,7 @@ queue:
 PER_CONNECTOR = {
     "module.queue.aws_sqs_queue.main",
     "module.queue.aws_sqs_queue.dlq",
+    "module.queue.aws_sqs_queue.quarantine",
     "module.queue.aws_sqs_queue_redrive_allow_policy.dlq",
     "aws_iam_policy.worker",
     "aws_iam_role.worker",
@@ -99,7 +100,7 @@ def test_every_shipped_yaml_becomes_a_connector(tmp_path: Path):
         for suffix in PER_CONNECTOR:
             assert f'module.connector["{name}"].{suffix}' in addresses
     secrets = 1 + 2 + 1
-    assert len(addresses) == 1 + len(names) * len(PER_CONNECTOR) + secrets == 23
+    assert len(addresses) == 1 + len(names) * len(PER_CONNECTOR) + secrets == 26
 
 
 def test_adding_one_yaml_adds_exactly_that_connector(tmp_path: Path):
@@ -114,4 +115,4 @@ def test_adding_one_yaml_adds_exactly_that_connector(tmp_path: Path):
         'module.connector["pager-oncall"].aws_ssm_parameter.secret["token"]'
     }
     assert added == expected
-    assert len(added) == 7
+    assert len(added) == 8

@@ -1,0 +1,13 @@
+# What a task must already carry before Conduit will post it to #ops.
+fields:
+  id:
+    type: string
+    required: true
+    max_length: 256
+  title:
+    type: string
+    required: true
+  body:
+    type: string
+  labels:
+    type: list

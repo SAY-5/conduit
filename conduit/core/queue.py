@@ -149,12 +149,18 @@ def _attributes(envelope: Envelope) -> dict[str, Any]:
     }
 
 
-def ensure_queues(spec: ConnectorSpec, client: Any | None = None) -> tuple[SqsQueue, SqsQueue]:
-    """Create ``conduit-<name>`` and its DLQ with a redrive policy.
+def ensure_queues(
+    spec: ConnectorSpec, client: Any | None = None
+) -> tuple[SqsQueue, SqsQueue, SqsQueue]:
+    """Create ``conduit-<name>``, its DLQ with a redrive policy, and its quarantine queue.
 
     Terraform owns these in a deployment; this exists for tests and ad hoc local runs.
     """
     client = client or aws_client("sqs")
+    quarantine_url = client.create_queue(
+        QueueName=spec.quarantine_name,
+        Attributes={"MessageRetentionPeriod": str(spec.queue.dlq_retention_seconds)},
+    )["QueueUrl"]
     dlq_url = client.create_queue(
         QueueName=spec.dlq_name,
         Attributes={"MessageRetentionPeriod": str(spec.queue.dlq_retention_seconds)},
@@ -173,7 +179,7 @@ def ensure_queues(spec: ConnectorSpec, client: Any | None = None) -> tuple[SqsQu
             ),
         },
     )["QueueUrl"]
-    return SqsQueue(url, client), SqsQueue(dlq_url, client)
+    return SqsQueue(url, client), SqsQueue(dlq_url, client), SqsQueue(quarantine_url, client)
 
 
 def redrive_policy(queue: SqsQueue) -> dict[str, Any] | None:
@@ -213,6 +219,32 @@ def replay_dead_letters(dlq: SqsQueue, target: SqsQueue, limit: int | None = Non
         envelope = message.envelope.model_copy(update={"attempt": message.envelope.attempt + 1})
         target.send(envelope)
         dlq.delete(message.receipt_handle)
+        moved += 1
+    return moved
+
+
+def list_quarantined(quarantine: SqsQueue, limit: int | None = None) -> list[Message]:
+    """Peek at quarantined messages, each still carrying the note that set it aside."""
+    return list_dead_letters(quarantine, limit=limit)
+
+
+def redrive_quarantined(quarantine: SqsQueue, target: SqsQueue, limit: int | None = None) -> int:
+    """Move what is in quarantine now back onto ``target``, once the payload or schema is fixed.
+
+    The move is bounded by the depth read at the start. A worker that still
+    rejects the payload quarantines it again within the call, and an unbounded
+    drain would chase those re-arrivals forever; the caller re-runs the command
+    after the real fix instead.
+    """
+    moved = 0
+    if limit is None:
+        limit = quarantine.depth()["ApproximateNumberOfMessages"]
+    for message in drain(quarantine, visibility=60, limit=limit):
+        envelope = message.envelope.model_copy(
+            update={"attempt": message.envelope.attempt + 1, "quarantine": None}
+        )
+        target.send(envelope)
+        quarantine.delete(message.receipt_handle)
         moved += 1
     return moved
 

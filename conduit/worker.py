@@ -15,11 +15,12 @@ from conduit.adapters.base import Adapter
 from conduit.config import ConnectorSpec
 from conduit.core.breaker import STATE_VALUE, BreakerState, CircuitBreaker
 from conduit.core.idempotency import IdempotencyStore
-from conduit.core.mapping import validate_task
+from conduit.core.mapping import MappingError, validate_task
 from conduit.core.queue import Message, SqsQueue
 from conduit.core.ratelimit import TokenBucket
 from conduit.core.retry import DeliveryError, TransientError, retry_call
-from conduit.models import DeliveryResult, DeliveryStatus
+from conduit.core.schema import SchemaError, SourceSchema, validate_payload
+from conduit.models import DeliveryResult, DeliveryStatus, QuarantineNote, Task
 
 log = structlog.get_logger()
 
@@ -41,7 +42,7 @@ class WorkerStats:
     received: int = 0
     delivered: int = 0
     deduplicated: int = 0
-    rejected: int = 0
+    quarantined: int = 0
     retried: int = 0
     failed: int = 0
     dead_lettered: int = 0
@@ -62,6 +63,8 @@ class Worker:
         store: IdempotencyStore,
         queue: SqsQueue,
         *,
+        quarantine: SqsQueue | None = None,
+        schema: SourceSchema | None = None,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -69,6 +72,8 @@ class Worker:
         self.adapter = adapter
         self.store = store
         self.queue = queue
+        self.quarantine = quarantine
+        self.schema = schema
         self._sleep = sleep
         self._clock = clock
         self.stats = WorkerStats()
@@ -131,21 +136,9 @@ class Worker:
         metrics.queue_lag.labels(name).observe(max(0.0, lag))
         logger = self._log.bind(task_id=task.id, version=task.version, key=key[:12])
 
-        problem = validate_task(self.spec, task)
-        if problem is not None:
-            self.queue.delete(message.receipt_handle)
-            self.stats.rejected += 1
-            metrics.rejected.labels(name, problem.reason).inc()
-            logger.warning(
-                "delivery.rejected", field=problem.field, reason=problem.reason, error=str(problem)
-            )
-            return DeliveryResult(
-                status=DeliveryStatus.REJECTED,
-                connector=name,
-                task_id=task.id,
-                idempotency_key=key,
-                detail=f"mapping {problem.reason}: {problem}",
-            )
+        note = self.inspect(task)
+        if note is not None:
+            return self._quarantine(message, note, logger)
 
         if not self.breaker.allow():
             hold = int(self.breaker.remaining()) + 1
@@ -240,6 +233,45 @@ class Worker:
         )
         return result.model_copy(update={"attempts": outcome.attempts})
 
+    def inspect(self, task: Task) -> QuarantineNote | None:
+        """Check the source schema, then the mapping rules; first violation wins."""
+        problem: SchemaError | MappingError | None = None
+        stage = "schema"
+        if self.schema is not None:
+            problem = validate_payload(self.schema, task)
+        if problem is None:
+            stage = "mapping"
+            problem = validate_task(self.spec, task)
+        if problem is None:
+            return None
+        return QuarantineNote(
+            stage=stage, field=problem.field, reason=problem.reason, detail=str(problem)
+        )
+
+    def _quarantine(self, message: Message, note: QuarantineNote, logger) -> DeliveryResult:
+        """Move a payload that can never be delivered off the work queue, not into the DLQ."""
+        name = self.spec.name
+        env = message.envelope
+        if self.quarantine is not None:
+            self.quarantine.send(env.model_copy(update={"quarantine": note}))
+        self.queue.delete(message.receipt_handle)
+        self.stats.quarantined += 1
+        metrics.quarantined.labels(name, note.stage, note.reason).inc()
+        logger.warning(
+            "delivery.quarantined",
+            stage=note.stage,
+            field=note.field,
+            reason=note.reason,
+            error=note.detail,
+        )
+        return DeliveryResult(
+            status=DeliveryStatus.QUARANTINED,
+            connector=name,
+            task_id=env.task.id,
+            idempotency_key=env.idempotency_key,
+            detail=f"{note.stage} {note.reason}: {note.detail}",
+        )
+
     def _throttle(self) -> None:
         wait = self.bucket.acquire()
         if wait <= 0:
@@ -296,7 +328,7 @@ class Worker:
             "received": s.received,
             "delivered": s.delivered,
             "deduplicated": s.deduplicated,
-            "rejected": s.rejected,
+            "quarantined": s.quarantined,
             "retried": s.retried,
             "failed": s.failed,
             "dead_lettered": s.dead_lettered,

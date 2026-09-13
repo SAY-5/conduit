@@ -46,7 +46,7 @@ class Task(BaseModel):
 class DeliveryStatus(StrEnum):
     DELIVERED = "delivered"
     DEDUPLICATED = "deduplicated"
-    REJECTED = "rejected"
+    QUARANTINED = "quarantined"
     FAILED = "failed"
 
 
@@ -62,6 +62,16 @@ class DeliveryResult(BaseModel):
     detail: str = ""
 
 
+class QuarantineNote(BaseModel):
+    """Why a message was set aside, carried with it into the quarantine queue."""
+
+    stage: str
+    field: str
+    reason: str
+    detail: str
+    at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class Envelope(BaseModel):
     """The message body placed on the connector queue."""
 
@@ -70,3 +80,4 @@ class Envelope(BaseModel):
     idempotency_key: str
     submitted_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     attempt: int = 0
+    quarantine: QuarantineNote | None = None
