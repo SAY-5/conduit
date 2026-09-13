@@ -26,6 +26,12 @@ def wait_until(predicate, timeout: float, interval: float = 0.1) -> bool:
     return predicate()
 
 
+def busiest_window(stamps: list[float], width: float) -> int:
+    """Most arrivals in any window of ``width`` seconds."""
+    ordered = sorted(stamps)
+    return max(sum(1 for later in ordered if start <= later < start + width) for start in ordered)
+
+
 def test_throttle_holds_the_configured_rate_over_a_window(rig_factory):
     rate, burst, sends = 5.0, 1, 6
     rig = rig_factory("slack-ops", rate_limit=RateLimit(requests_per_second=rate, burst=burst))
@@ -33,14 +39,15 @@ def test_throttle_holds_the_configured_rate_over_a_window(rig_factory):
     stats = rig.worker.run(max_messages=sends, wait_seconds=2)
 
     assert stats.delivered == sends
-    assert stats.rate_limit_waits == sends - burst
-    stamps = [e["received_at"] for e in rig.fake.inbox()["entries"]]
+    assert stats.rate_limit_waits > 0
+    stamps = sorted(e["received_at"] for e in rig.fake.inbox()["entries"])
     assert len(stamps) == sends
-    window = stamps[-1] - stamps[0]
-    # The bucket lets the burst through free and spaces the rest 1/rate apart, so
-    # the remote sees sends - burst arrivals across the window at most.
-    assert (sends - burst) / window <= rate
-    assert window == pytest.approx((sends - burst) / rate, abs=0.15)
+    # Tokens are capped at burst, so by any time t the remote has seen at most
+    # burst + rate * elapsed sends. That bound holds however the polling happens
+    # to be scheduled, unlike the count of waits, which drops when a slow poll
+    # leaves the bucket time to refill.
+    assert stamps[-1] - stamps[0] >= (sends - burst) / rate - 0.02
+    assert busiest_window(stamps, 1.0) <= burst + rate
 
 
 def test_retry_after_pauses_the_connector_not_just_the_message(rig_factory):
