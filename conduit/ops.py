@@ -134,6 +134,12 @@ def depth_of(queue: SqsQueue) -> Depth:
     )
 
 
+def record_depth(connector: str, queue: str, depth: Depth) -> None:
+    """Set ``conduit_queue_depth`` for one queue; ``queue`` is work, dlq, or quarantine."""
+    metrics.queue_depth.labels(connector, queue, "visible").set(depth.visible)
+    metrics.queue_depth.labels(connector, queue, "in_flight").set(depth.in_flight)
+
+
 def collect(specs: dict[str, ConnectorSpec], sqs: Any, statuses: StatusStore) -> list[ConnectorOps]:
     """Read live depths for every connector plus whatever its worker last published."""
     rows = []
@@ -148,8 +154,7 @@ def collect(specs: dict[str, ConnectorSpec], sqs: Any, statuses: StatusStore) ->
                 continue
             depth = depth_of(SqsQueue.by_name(queue_name, sqs))
             setattr(row, attr, depth)
-            metrics.queue_depth.labels(name, attr, "visible").set(depth.visible)
-            metrics.queue_depth.labels(name, attr, "in_flight").set(depth.in_flight)
+            record_depth(name, attr, depth)
         rows.append(row)
     return rows
 
