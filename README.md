@@ -223,21 +223,29 @@ one that never started is told apart from one that is merely idle.
 
 `conduit ops costs` reports what a run actually bought. The counters are per run rather than
 cumulative: each worker records where the store and queue counters stood when it started and
-reports the difference, so restarting a worker starts a new bill. Both views are also
-Prometheus metrics, `conduit_queue_depth{connector,queue,visibility}` and
-`conduit_billable_units{connector,service,unit}`, beside the delivery counters from earlier
-versions. `make demo` prints both blocks at the end of its run, and the real output is under
-[make demo](#make-demo).
+reports the difference, so restarting a worker starts a new bill.
+
+Each worker also serves both views on `/metrics`, beside the delivery counters from earlier
+versions. `conduit_queue_depth{connector,queue,visibility}` covers the worker's own work,
+dead-letter, and quarantine queues: `queue` is `work`, `dlq`, or `quarantine` and `visibility`
+is `visible` or `in_flight`, the same labels `conduit ops summary` sets. The worker refreshes
+it after a poll at most once every 10 seconds, so on the default 20 second long poll an idle
+worker refreshes once per poll, and each refresh is three `GetQueueAttributes` calls counted in
+the run's SQS requests. `conduit_billable_units{connector,service,unit}` is set each time the
+status row is written. `make demo` prints both blocks at the end of its run, and the real
+output is under [make demo](#make-demo).
 
 `tests/integration/test_ops.py` seeds a connector with three delivered tasks, one dead letter,
 one quarantined payload, and one still queued, then asserts those exact depths, the exact item
-counts behind the bill, and the rendered lines.
+counts behind the bill, and the rendered lines. It also runs a worker with its own `/metrics`
+port and checks that dead letters and a quarantined payload enqueued after the worker started
+show up in `conduit_queue_depth`.
 
 ## Quick start
 
 ```
 make setup          # uv sync
-make test-unit      # 167 tests, no Docker
+make test-unit      # 168 tests, no Docker
 make up             # LocalStack + fakes + one worker per connector
 make tf-apply       # terraform apply against LocalStack (26 resources)
 make test           # unit + LocalStack integration + terraform plan tests
@@ -314,8 +322,10 @@ retries; per-attempt delivery latency is the worker's own measurement.
 `web/` is a static page that runs the same demo without Docker: `web/src/sim` ports the worker,
 idempotency store, queue, retry policy, token bucket, and Terraform resource set to TypeScript,
 driven by a seeded PRNG and a virtual clock. `npm run selfcheck` in `web/` reproduces the
-figures above (60 deduplicated, 10 dead-lettered then replayed to 0, resources planned for
-a fourth connector YAML) as 42 assertions in Node. See [web/README.md](web/README.md).
+figures above (60 deduplicated, 10 dead-lettered then replayed to 0, 8 resources planned for
+a fourth connector YAML, 26 for the shipped three) and checks that a malformed payload is
+quarantined rather than dead-lettered, as 44 assertions in Node. See
+[web/README.md](web/README.md).
 
 ## LocalStack, not AWS
 
@@ -365,6 +375,20 @@ tests/              unit (respx, moto), integration (LocalStack), terraform (pla
 
 ## Changelog
 
+### v5.0.1
+
+* Workers now set `conduit_queue_depth{connector,queue,visibility}` for their own work,
+  dead-letter, and quarantine queues, refreshed after a poll at most once every 10 seconds
+  (`QUEUE_DEPTH_INTERVAL_SECONDS`). In v5.0.0 only `conduit ops` set it, so a scrape of a
+  worker did not show it.
+* `tests/unit/test_worker.py` checks the refresh and its interval against a stubbed SQS
+  client, and `tests/integration/test_ops.py` scrapes a running worker's `/metrics` after
+  enqueueing.
+* The browser demo plans the per-connector quarantine queue: 8 resources for a new connector
+  and 26 for the shipped base stack, as the real plan does. Its DLQ lab sends a malformed
+  payload to quarantine, and the self-check runs 44 assertions.
+* ARCHITECTURE.md and CONTRIBUTING.md quote the current plan counts.
+
 ### v5.0.0
 
 * Every worker publishes a status row into the idempotency table under `status|<connector>`:
@@ -377,7 +401,8 @@ tests/              unit (respx, moto), integration (LocalStack), terraform (pla
   the current run, priced at the us-east-1 on-demand list rates in `PRICE_PER_MILLION`.
   Counters are per run: each worker subtracts the baseline it saw at startup.
 * `conduit_queue_depth{connector,queue,visibility}` and
-  `conduit_billable_units{connector,service,unit}` join the existing metrics.
+  `conduit_billable_units{connector,service,unit}` join the existing metrics. As released,
+  only `conduit ops` set the queue depth gauge; workers set it from v5.0.1.
 * `make demo` prints both ops blocks and writes the collected rows into
   `demo/out/details.json`.
 
