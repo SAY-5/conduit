@@ -6,7 +6,8 @@ import { idempotencyKey, IdempotencyStore } from "./idempotency";
 import { makeTask, type Envelope, type Task } from "./models";
 import { Clock, Rng } from "./prng";
 import { listDeadLetters, Queue, replayDeadLetters, type QueueMessage } from "./queue";
-import { dlqName, loadAll, queueName, type ConnectorSpec } from "./specs";
+import { SCHEMAS } from "./schema";
+import { dlqName, loadAll, quarantineName, queueName, type ConnectorSpec } from "./specs";
 import { percentile, Worker, type HandleTrace, type LogEvent } from "./worker";
 
 export const UNIQUE_PER_CONNECTOR = 80;
@@ -19,6 +20,7 @@ export interface ConnectorRuntime {
   spec: ConnectorSpec;
   queue: Queue;
   dlq: Queue;
+  quarantine: Queue;
   target: FakeTarget;
   adapter: Adapter;
   worker: Worker;
@@ -75,10 +77,11 @@ export class Engine {
       const dlq = new Queue(dlqName(spec), now, 30, `${spec.name}-dlq`);
       const queue = new Queue(queueName(spec), now, spec.queue.visibilityTimeoutSeconds, spec.name);
       queue.configureRedrive(dlq, spec.queue.maxReceiveCount);
+      const quarantine = new Queue(quarantineName(spec), now, 30, `${spec.name}-quarantine`);
       const target = new FakeTarget(spec.type, this.rng, now);
       const adapter = buildAdapter(spec, target, now);
-      const worker = new Worker(spec, adapter, this.store, queue, this.clock, this.rng, (e) => this.emit({ ...e, connector: spec.name }));
-      this.connectors[spec.name] = { spec, queue, dlq, target, adapter, worker };
+      const worker = new Worker(spec, adapter, this.store, queue, this.clock, this.rng, (e) => this.emit({ ...e, connector: spec.name }), quarantine, SCHEMAS[spec.name] ?? null);
+      this.connectors[spec.name] = { spec, queue, dlq, quarantine, target, adapter, worker };
     }
   }
 
@@ -164,6 +167,7 @@ export class Engine {
     for (const rt of Object.values(this.connectors)) {
       rt.queue.purge();
       rt.dlq.purge();
+      rt.quarantine.purge();
       rt.target.clearInbox();
       rt.target.clearFaults();
       rt.worker.reset();

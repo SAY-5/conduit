@@ -6,6 +6,7 @@ import type { DeliveryResult } from "./models";
 import type { Clock, Rng } from "./prng";
 import type { Queue, QueueMessage } from "./queue";
 import { DeliveryError, retryCall, TransientError, type RetryOutcome } from "./retry";
+import { validatePayload, type SourceSchema } from "./schema";
 import type { ConnectorSpec } from "./specs";
 import { CircuitBreaker, isTargetFailure, TokenBucket } from "./throttle";
 
@@ -20,6 +21,7 @@ export type EventKind =
   | "retry"
   | "fail"
   | "dlq"
+  | "quarantine"
   | "replay"
   | "in_progress"
   | "submit"
@@ -43,6 +45,7 @@ export interface WorkerStats {
   received: number;
   delivered: number;
   deduplicated: number;
+  quarantined: number;
   retried: number;
   failed: number;
   failedPermanent: number;
@@ -65,6 +68,7 @@ export function emptyStats(): WorkerStats {
     received: 0,
     delivered: 0,
     deduplicated: 0,
+    quarantined: 0,
     retried: 0,
     failed: 0,
     failedPermanent: 0,
@@ -90,7 +94,7 @@ export interface HandleTrace {
   retry: RetryOutcome | null;
   elapsed: number;
   willDeadLetter: boolean;
-  reason: "delivered" | "deduplicated" | "permanent" | "exhausted" | "in_progress" | "breaker_open";
+  reason: "delivered" | "deduplicated" | "quarantined" | "permanent" | "exhausted" | "in_progress" | "breaker_open";
 }
 
 export class Worker {
@@ -110,6 +114,8 @@ export class Worker {
     readonly clock: Clock,
     readonly rng: Rng,
     readonly log: (e: Omit<LogEvent, "seq" | "t" | "connector">) => void,
+    readonly quarantine: Queue | null = null,
+    readonly schema: SourceSchema | null = null,
   ) {
     this.requestsPerSecond = spec.rateLimit.requestsPerSecond;
     const now = () => this.clock.now();
@@ -193,6 +199,16 @@ export class Worker {
     s.received += 1;
     s.queueLags.push(Math.max(0, this.clock.now() - env.submittedAt));
     const short = key.slice(0, 12);
+
+    const note = this.schema ? validatePayload(this.schema, task) : null;
+    if (note) {
+      this.quarantine?.send({ ...env, quarantine: note });
+      this.queue.delete(message.messageId);
+      s.quarantined += 1;
+      this.log({ kind: "quarantine", event: "delivery.quarantined", taskId: task.id, key: short, detail: `stage=${note.stage} field=${note.field} reason=${note.reason}` });
+      const result: DeliveryResult = { status: "quarantined", connector: name, taskId: task.id, idempotencyKey: key, remoteId: null, attempts: message.receiveCount, detail: `${note.stage} ${note.reason}: ${note.detail}` };
+      return { message, claim: { acquired: false, state: null, remoteId: null, condition: "failed" }, result, retry: null, elapsed: 0, willDeadLetter: false, reason: "quarantined" };
+    }
 
     if (!this.breaker.allow()) {
       const hold = Math.floor(this.breaker.remaining()) + 1;

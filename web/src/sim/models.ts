@@ -41,7 +41,15 @@ export function taskField(task: Task, path: string): unknown {
   return current;
 }
 
-export type DeliveryStatus = "delivered" | "deduplicated" | "failed";
+export type DeliveryStatus = "delivered" | "deduplicated" | "failed" | "quarantined";
+
+/** Why a message was set aside, carried with it into the quarantine queue. */
+export interface QuarantineNote {
+  stage: string;
+  field: string;
+  reason: string;
+  detail: string;
+}
 
 export interface DeliveryResult {
   status: DeliveryStatus;
@@ -60,4 +68,5 @@ export interface Envelope {
   idempotencyKey: string;
   submittedAt: number;
   attempt: number;
+  quarantine?: QuarantineNote;
 }
