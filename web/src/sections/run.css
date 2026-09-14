@@ -54,7 +54,7 @@
 
 .run-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.22fr) minmax(0, 0.78fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 1.2rem;
   margin-top: 1.2rem;
   align-items: start;
@@ -70,6 +70,7 @@
 .run-table { min-width: 520px; font-size: 0.8rem; }
 .run-table .chip { white-space: nowrap; }
 .run-table th, .run-table td { padding-inline: 0.5rem; }
+.run-table thead th { white-space: nowrap; }
 .run-table th[scope="row"] { padding-left: 0; }
 .run-table td { font-variant-numeric: tabular-nums; }
 .run-good { color: var(--teal-2); }
