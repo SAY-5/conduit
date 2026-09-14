@@ -84,7 +84,7 @@ def test_summary_renders_one_line_per_connector_with_those_values(ops_rig, aws):
     assert body.startswith(rig.spec.name)
     assert body.split()[1:6] == ["1", "0", "1", "1", "3"]
     assert "closed" in body and "tok" in body
-    assert rendered[-1].split() == ["total", "3", "0", "3"]
+    assert rendered[-1].split() == ["total", "1", "0", "1", "1", "3"]
 
 
 def test_costs_report_counts_written_during_the_run(ops_rig, aws):

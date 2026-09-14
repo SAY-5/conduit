@@ -65,7 +65,7 @@ def test_summary_line_carries_every_depth_and_the_worker_state():
 
 def test_summary_totals_add_every_queue():
     rendered = render_summary([row(), row(name="jira-support")]).splitlines()
-    assert rendered[-1].split() == ["total", "18", "2", "60"]
+    assert rendered[-1].split() == ["total", "8", "2", "4", "6", "60"]
 
 
 def test_a_connector_without_a_status_reads_no_worker_seen():

@@ -128,6 +128,9 @@ class Worker:
             batch = self.queue.receive(wait_seconds=wait_seconds)
             if not batch:
                 idle += 1
+                # An idle worker still has to say so, or the last row an operator
+                # can read is whatever was true just before the queue drained.
+                self.publish_status(force=True)
                 if idle_polls is not None and idle >= idle_polls:
                     break
                 continue

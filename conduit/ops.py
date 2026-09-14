@@ -161,12 +161,14 @@ def render_summary(rows: list[ConnectorOps]) -> str:
         f"{'delivered':>11}{'per min':>9}{'throttle':>10}{'breaker':>9}  last error"
     )
     lines = [header, "-" * len(header)]
-    totals = Depth()
-    delivered = 0
+    work = Depth()
+    dlq = quarantine = delivered = 0
     for row in rows:
         s = row.status
-        totals.visible += row.work.visible + row.dlq.visible + row.quarantine.visible
-        totals.in_flight += row.work.in_flight + row.dlq.in_flight + row.quarantine.in_flight
+        work.visible += row.work.visible
+        work.in_flight += row.work.in_flight
+        dlq += row.dlq.total
+        quarantine += row.quarantine.total
         delivered += s.delivered if s else 0
         lines.append(
             f"{row.name:<16}{row.work.visible:>7}{row.work.in_flight:>9}"
@@ -177,7 +179,7 @@ def render_summary(rows: list[ConnectorOps]) -> str:
         )
     lines.append("-" * len(header))
     lines.append(
-        f"{'total':<16}{totals.visible:>7}{totals.in_flight:>9}{'':>6}{'':>6}{delivered:>11}"
+        f"{'total':<16}{work.visible:>7}{work.in_flight:>9}{dlq:>6}{quarantine:>6}{delivered:>11}"
     )
     return "\n".join(lines)
 
