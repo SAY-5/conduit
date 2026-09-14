@@ -70,19 +70,25 @@ async function scenarioLines(): Promise<CheckLine[]> {
   ];
 }
 
-/** Terraform: the shipped resource set, and the diff one new YAML plans. */
+/**
+ * Terraform: the shipped resource set, and the diff one new YAML plans. The counts are the
+ * real plan's: 7 managed resources per connector (main, dlq, and quarantine queues, the
+ * redrive allow policy, IAM policy, role, attachment), one SSM parameter per secret, and the
+ * shared table. Shipped: 1 + 3 x 7 + (1 + 2 + 1) = 26; pager-oncall adds 7 + 1 = 8, so 34.
+ */
 function terraformLines(): CheckLine[] {
   const before = plan(CONNECTOR_YAML);
   const after = plan({ ...CONNECTOR_YAML, "pager-oncall": NEW_CONNECTOR_YAML });
   const diff = diffPlans(before, after);
   const sameName = diff.add.every((r) => r.address.includes(`["pager-oncall"]`));
   return [
-    { label: "new integration", value: diff.summary, ok: diff.add.length === 7 && diff.change.length === 0 && diff.destroy.length === 0 },
+    { label: "new integration", value: diff.summary, ok: diff.add.length === 8 && diff.change.length === 0 && diff.destroy.length === 0 },
     ...diff.add.map((r) => ({ label: "  +", value: r.address, ok: null })),
+    { label: "  quarantine queue", value: "module.connector[\"pager-oncall\"].module.queue.aws_sqs_queue.quarantine is planned", ok: diff.add.some((r) => r.address === `module.connector["pager-oncall"].module.queue.aws_sqs_queue.quarantine`) },
     { label: "  only the new module", value: "every added address is under module.connector[\"pager-oncall\"]", ok: sameName },
     { label: "  nothing else moves", value: `${diff.change.length} to change, ${diff.destroy.length} to destroy`, ok: diff.change.length === 0 && diff.destroy.length === 0 },
-    { label: "shipped connectors", value: `${before.resources.length} resources for ${before.connectors.length} connectors plus the shared table`, ok: before.resources.length === 23 && before.connectors.length === 3 },
-    { label: "  after the fourth", value: `${after.resources.length} resources for ${after.connectors.length} connectors`, ok: after.resources.length === 30 },
+    { label: "shipped connectors", value: `${before.resources.length} resources for ${before.connectors.length} connectors plus the shared table`, ok: before.resources.length === 26 && before.connectors.length === 3 },
+    { label: "  after the fourth", value: `${after.resources.length} resources for ${after.connectors.length} connectors`, ok: after.resources.length === 34 },
   ];
 }
 
@@ -144,6 +150,13 @@ async function unitLines(): Promise<CheckLine[]> {
     for (const m of main.receive(10)) main.changeVisibility(m.messageId, 0);
   }
   lines.push({ label: "redrive", value: `maxReceiveCount=2 moves the message after ${main.redrives[0]?.receiveCount ?? 0} receives; main ${main.messages.length}, dlq ${dlq.messages.length}`, ok: main.messages.length === 0 && dlq.messages.length === 1 });
+
+  const lab = new Engine("LAB-QUAR");
+  const crm = lab.connectors["webhook-crm"];
+  await lab.submit("webhook-crm", [makeTask({ id: "Q-1", title: "valid record" }), makeTask({ id: "Q-2", title: "unknown status", status: "archived" })]);
+  await lab.drain();
+  const note = crm.quarantine.messages[0]?.envelope.quarantine;
+  lines.push({ label: "quarantine", value: `status "archived" fails webhook-crm/v1 (${note?.reason ?? "no note"}): ${crm.quarantine.messages.length} in ${crm.quarantine.name}, ${crm.dlq.messages.length} in the DLQ, ${crm.target.inbox.length} delivered`, ok: crm.quarantine.messages.length === 1 && crm.dlq.messages.length === 0 && crm.target.inbox.length === 1 && note?.field === "status" && note.reason === "enum" });
 
   const fourth = loadSpec("pager-oncall", NEW_CONNECTOR_YAML);
   lines.push({ label: "spec defaults", value: `pager-oncall: burst ${fourth.rateLimit.burst}, breaker ${fourth.breaker.failureThreshold}/${fourth.breaker.recoverySeconds}s, visibility ${fourth.queue.visibilityTimeoutSeconds}s`, ok: fourth.rateLimit.burst === 1 && fourth.breaker.failureThreshold === 5 && fourth.queue.visibilityTimeoutSeconds === 60 });
