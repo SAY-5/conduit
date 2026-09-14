@@ -103,10 +103,12 @@ wait), then for each message: record queue lag, validate the task against the ma
 never claims a key), claim, resolve `remote_id` for revisions above 1, throttle to the spec's
 `requests_per_second`, `retry_call(adapter.deliver)`, then either mark delivered and delete, or
 release and set visibility to 0. Metrics on `/metrics` (Prometheus client):
-`conduit_delivered_total`, `conduit_deduplicated_total`, `conduit_rejected_total{reason}`,
+`conduit_delivered_total`, `conduit_deduplicated_total`, `conduit_quarantined_total{stage,reason}`,
 `conduit_retried_total`, `conduit_failed_total{reason}`, `conduit_dead_lettered_total`,
-`conduit_delivery_seconds` (attempt to ack) and `conduit_queue_lag_seconds` (submit to
-receive), all labelled by connector. Logs are structlog, JSON when `CONDUIT_JSON_LOGS=1`.
+`conduit_delivery_seconds` (attempt to ack), `conduit_queue_lag_seconds` (submit to
+receive), and `conduit_queue_depth{queue,visibility}` for the connector's work, dlq, and
+quarantine queues (refreshed after a poll, at most once every 10 seconds), all labelled by
+connector. Logs are structlog, JSON when `CONDUIT_JSON_LOGS=1`.
 
 ## Terraform layout
 
@@ -116,18 +118,18 @@ terraform/
   providers.tf       one aws provider; use_localstack switches endpoints and credential checks
   localstack.tfvars  use_localstack = true, localstack_endpoint = http://localhost:4566
   modules/
-    queue/               aws_sqs_queue main + dlq, redrive_policy, redrive_allow_policy
+    queue/               aws_sqs_queue main + dlq + quarantine, redrive_policy, redrive_allow_policy
     idempotency-table/   aws_dynamodb_table with TTL on expires_at, PITR
     connector/           module.queue + aws_ssm_parameter per secret + IAM policy/role/attachment
                          + container definition (aws_ecs_task_definition when enable_ecs)
 ```
 
-Per connector the plan is 6 resources plus one SSM parameter per secret; the table is shared.
+Per connector the plan is 7 resources plus one SSM parameter per secret; the table is shared.
 The YAML is the only input: queue settings come from `queue.*`, secrets from `secrets`, and the
 container definition wires `CONDUIT_CONNECTORS_DIR`, `CONDUIT_TABLE`, and one
 `valueFrom` SSM reference per secret. `tests/terraform/test_terraform.py` runs `fmt`,
-`validate`, plans the shipped connectors (23 creates), and proves that adding one YAML changes
-the plan by exactly that connector's 7 resources.
+`validate`, plans the shipped connectors (26 creates), and proves that adding one YAML changes
+the plan by exactly that connector's 8 resources (7 plus its one secret).
 
 Against LocalStack the queue URLs use the `standard` endpoint strategy
 (`http://sqs.<region>.localhost.localstack.cloud:4566/<account>/<name>`), which is the format

@@ -19,7 +19,7 @@ it). Terraform tests need the `terraform` binary and network access for the firs
 
 1. Add `connectors/<name>.yaml` with `type`, `target`, `secrets`, and any `mapping`, `retry`,
    `rate_limit`, or `queue` overrides. `conduit config validate` must pass.
-2. Run `terraform -chdir=terraform plan -var-file=localstack.tfvars`; expect 6 new resources
+2. Run `terraform -chdir=terraform plan -var-file=localstack.tfvars`; expect 7 new resources
    plus one SSM parameter per secret.
 3. Add the worker service to `deploy/docker-compose.yml` if you want it in the local stack.
 
