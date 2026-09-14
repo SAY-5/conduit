@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import threading
+import time
+
+import httpx
 import pytest
+from conduit.core.idempotency import idempotency_key
 from conduit.core.queue import ensure_queues
 from conduit.core.schema import SchemaField, SourceSchema
+from conduit.models import Envelope
 from conduit.ops import StatusStore, collect, render_costs, render_summary, usd
+from conduit.worker import QUEUE_DEPTH_INTERVAL_SECONDS
+from prometheus_client import start_http_server
+from prometheus_client.parser import text_string_to_metric_families
 
-from tests.integration.conftest import task
+from tests.integration.conftest import _free_port, task
 
 pytestmark = pytest.mark.integration
 
@@ -150,3 +159,68 @@ def test_queues_created_by_ensure_are_all_three(rig_factory, aws):
     assert queue.name == rig.spec.queue_name
     assert dlq.name == rig.spec.dlq_name
     assert quarantine.name == rig.spec.quarantine_name
+
+
+def scraped_depths(port: int, connector: str) -> dict[tuple[str, str], float]:
+    text = httpx.get(f"http://127.0.0.1:{port}/metrics", timeout=5).text
+    return {
+        (sample.labels["queue"], sample.labels["visibility"]): sample.value
+        for family in text_string_to_metric_families(text)
+        if family.name == "conduit_queue_depth"
+        for sample in family.samples
+        if sample.labels.get("connector") == connector
+    }
+
+
+def wait_for_depths(port, connector, ready, timeout):
+    deadline = time.monotonic() + timeout
+    while True:
+        depths = scraped_depths(port, connector)
+        if ready(depths) or time.monotonic() >= deadline:
+            return depths
+        time.sleep(0.5)
+
+
+def test_a_running_worker_serves_fresh_queue_depth_on_metrics(rig_factory):
+    schema = SourceSchema(
+        connector="ops",
+        version=1,
+        fields={"fields.region": SchemaField(type="string", required=True)},
+    )
+    rig = rig_factory("webhook-crm", schema=schema)
+    name = rig.spec.name
+    port = _free_port()
+    server, _ = start_http_server(port, addr="127.0.0.1")
+    stop = threading.Event()
+    runner = threading.Thread(
+        target=rig.worker.run, kwargs={"stop": stop, "wait_seconds": 1}, daemon=True
+    )
+    runner.start()
+    try:
+        before = wait_for_depths(port, name, lambda d: ("dlq", "visible") in d, timeout=15)
+        assert before[("dlq", "visible")] == 0
+        assert before[("quarantine", "visible")] == 0
+
+        # The worker never reads its DLQ, so these three stay put until the gauge sees them,
+        # and the payload without fields.region is quarantined by the worker itself.
+        dead = [task(f"DEPTH-dead-{i}") for i in range(3)]
+        rig.dlq.send_batch(
+            Envelope(task=t, connector=name, idempotency_key=idempotency_key(name, t.id, 1))
+            for t in dead
+        )
+        rig.submit(task("DEPTH-bad"))
+
+        after = wait_for_depths(
+            port,
+            name,
+            lambda d: d.get(("dlq", "visible")) == 3 and d.get(("quarantine", "visible")) == 1,
+            timeout=QUEUE_DEPTH_INTERVAL_SECONDS + 15,
+        )
+        assert after[("dlq", "visible")] == 3
+        assert after[("quarantine", "visible")] == 1
+        assert after[("work", "visible")] == 0
+        assert rig.worker.stats.quarantined == 1
+    finally:
+        stop.set()
+        runner.join(timeout=15)
+        server.shutdown()
