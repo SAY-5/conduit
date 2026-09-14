@@ -202,6 +202,7 @@ def worker(
     )
     queue = _queue_with_wait(spec.queue_name, wait_for_queue)
     quarantine = _queue_with_wait(spec.quarantine_name, wait_for_queue)
+    dlq = _queue_with_wait(spec.dlq_name, wait_for_queue)
     schema = _schema(schemas_dir, connector)
     if metrics_port > 0:
         metrics.serve(metrics_port)
@@ -214,6 +215,7 @@ def worker(
         store,
         queue,
         quarantine=quarantine,
+        dlq=dlq,
         schema=schema,
         statuses=StatusStore(table, client=aws_client("dynamodb")),
     )

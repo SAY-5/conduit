@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 import structlog
+from botocore.exceptions import BotoCoreError, ClientError
 
 from conduit import metrics
 from conduit.adapters.base import Adapter
@@ -22,7 +23,7 @@ from conduit.core.ratelimit import TokenBucket
 from conduit.core.retry import DeliveryError, TransientError, retry_call
 from conduit.core.schema import SchemaError, SourceSchema, validate_payload
 from conduit.models import DeliveryResult, DeliveryStatus, QuarantineNote, Task
-from conduit.ops import StatusStore, WorkerStatus
+from conduit.ops import StatusStore, WorkerStatus, depth_of, record_depth
 
 log = structlog.get_logger()
 
@@ -34,6 +35,9 @@ IN_PROGRESS_RECHECK_SECONDS = 10
 BREAKER_PAUSE_SLICE = 1.0
 # The status row is a heartbeat, not a log: rewrite it at most this often.
 STATUS_INTERVAL_SECONDS = 5.0
+# conduit_queue_depth is refreshed after a poll, but its three GetQueueAttributes
+# calls are spent at most this often.
+QUEUE_DEPTH_INTERVAL_SECONDS = 10.0
 
 
 def is_target_failure(err: TransientError) -> bool:
@@ -68,6 +72,7 @@ class Worker:
         queue: SqsQueue,
         *,
         quarantine: SqsQueue | None = None,
+        dlq: SqsQueue | None = None,
         schema: SourceSchema | None = None,
         statuses: StatusStore | None = None,
         run_id: str | None = None,
@@ -80,6 +85,7 @@ class Worker:
         self.store = store
         self.queue = queue
         self.quarantine = quarantine
+        self.dlq = dlq
         self.schema = schema
         self.statuses = statuses
         self.run_id = run_id or uuid.uuid4().hex[:7].upper()
@@ -88,6 +94,7 @@ class Worker:
         self._wall_clock = wall_clock
         self._started_at = wall_clock()
         self._published_at = 0.0
+        self._depth_at: float | None = None
         self.last_error = ""
         self.last_error_at = 0.0
         self.stats = WorkerStats()
@@ -128,6 +135,7 @@ class Worker:
             batch = self.queue.receive(wait_seconds=wait_seconds)
             if not batch:
                 idle += 1
+                self.refresh_queue_depth()
                 # An idle worker still has to say so, or the last row an operator
                 # can read is whatever was true just before the queue drained.
                 self.publish_status(force=True)
@@ -146,6 +154,7 @@ class Worker:
                 if max_messages is not None and handled >= max_messages:
                     stop.set()
                     break
+            self.refresh_queue_depth()
         self.publish_status(force=True)
         self._log.info("worker.stop", **self.summary())
         return self.stats
@@ -193,8 +202,26 @@ class Worker:
         ):
             metrics.billable_units.labels(self.spec.name, service, unit).set(value)
 
+    def refresh_queue_depth(self) -> None:
+        """Set the depth gauge for this connector's queues, at most once per interval."""
+        now = self._clock()
+        if self._depth_at is not None and now - self._depth_at < QUEUE_DEPTH_INTERVAL_SECONDS:
+            return
+        self._depth_at = now
+        for label, queue in (
+            ("work", self.queue),
+            ("dlq", self.dlq),
+            ("quarantine", self.quarantine),
+        ):
+            if queue is None or not hasattr(queue, "depth"):
+                continue
+            try:
+                record_depth(self.spec.name, label, depth_of(queue))
+            except (BotoCoreError, ClientError) as exc:
+                self._log.warning("queue_depth.failed", queue=label, error=str(exc))
+
     def _sqs_requests(self) -> int:
-        queues = [self.queue] + ([self.quarantine] if self.quarantine is not None else [])
+        queues = [q for q in (self.queue, self.quarantine, self.dlq) if q is not None]
         return sum(sum(q.requests.values()) for q in queues if hasattr(q, "requests"))
 
     def _note_error(self, detail: str) -> None:
