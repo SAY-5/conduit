@@ -9,11 +9,12 @@ from conduit import metrics
 from conduit.adapters.base import Adapter
 from conduit.config import ConnectorSpec, FieldRule, QueueSpec, RetryPolicy
 from conduit.core.idempotency import MemoryIdempotencyStore, idempotency_key
-from conduit.core.queue import Message
+from conduit.core.queue import Message, SqsQueue
 from conduit.core.retry import PermanentError, TransientError
 from conduit.core.schema import SchemaField, SourceSchema
 from conduit.models import DeliveryResult, DeliveryStatus, Envelope, Task
-from conduit.worker import Worker, percentile
+from conduit.worker import QUEUE_DEPTH_INTERVAL_SECONDS, Worker, percentile
+from prometheus_client import REGISTRY
 
 
 class FakeQueue:
@@ -274,6 +275,68 @@ def test_rate_limit_spacing(spec):
         queue.send(envelope(spec, f"T{i}"))
     worker.run(idle_polls=1, wait_seconds=0)
     assert len(slept) == 2 and all(abs(s - 0.5) < 1e-9 for s in slept)
+
+
+class StubSqs:
+    """Empty receives, and depths per queue name that a test can change between polls."""
+
+    def __init__(self, depths: dict[str, tuple[int, int]]) -> None:
+        self.depths = depths
+        self.attribute_calls = 0
+
+    def receive_message(self, **_):
+        return {}
+
+    def get_queue_attributes(self, *, QueueUrl, AttributeNames):  # noqa: N803 - boto3 spelling
+        self.attribute_calls += 1
+        visible, in_flight = self.depths[QueueUrl.rsplit("/", 1)[-1]]
+        return {
+            "Attributes": {
+                "ApproximateNumberOfMessages": str(visible),
+                "ApproximateNumberOfMessagesNotVisible": str(in_flight),
+                "ApproximateNumberOfMessagesDelayed": "0",
+            }
+        }
+
+
+def depth_gauge(connector: str, queue: str, visibility: str) -> float | None:
+    labels = {"connector": connector, "queue": queue, "visibility": visibility}
+    return REGISTRY.get_sample_value("conduit_queue_depth", labels)
+
+
+def test_idle_worker_refreshes_queue_depth_at_most_once_per_interval(spec):
+    spec = spec.model_copy(update={"name": "depth-probe"})
+    names = (spec.queue_name, spec.dlq_name, spec.quarantine_name)
+    sqs = StubSqs(dict(zip(names, [(4, 1), (2, 0), (1, 0)], strict=True)))
+    queue, dlq, quarantine = (SqsQueue(f"http://sqs/000000000000/{n}", sqs) for n in names)
+    clock = {"t": 100.0}
+    worker = Worker(
+        spec,
+        ScriptedAdapter(spec, {}),
+        MemoryIdempotencyStore(),
+        queue,
+        dlq=dlq,
+        quarantine=quarantine,
+        clock=lambda: clock["t"],
+    )
+
+    worker.run(idle_polls=1, wait_seconds=0)
+    assert sqs.attribute_calls == 3
+    assert depth_gauge(spec.name, "work", "visible") == 4
+    assert depth_gauge(spec.name, "work", "in_flight") == 1
+    assert depth_gauge(spec.name, "dlq", "visible") == 2
+    assert depth_gauge(spec.name, "quarantine", "visible") == 1
+
+    sqs.depths[spec.dlq_name] = (5, 0)
+    clock["t"] += QUEUE_DEPTH_INTERVAL_SECONDS - 1
+    worker.run(idle_polls=3, wait_seconds=0)
+    assert sqs.attribute_calls == 3
+    assert depth_gauge(spec.name, "dlq", "visible") == 2
+
+    clock["t"] += 1
+    worker.run(idle_polls=1, wait_seconds=0)
+    assert sqs.attribute_calls == 6
+    assert depth_gauge(spec.name, "dlq", "visible") == 5
 
 
 def test_percentile():

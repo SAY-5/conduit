@@ -144,7 +144,7 @@ def rig_factory(specs, fakes, aws, store, monkeypatch):
         spec = base.model_copy(update=update)
         queue, dlq, quarantine = ensure_queues(spec, aws["sqs"])
         adapter = build_adapter(spec)
-        worker = Worker(spec, adapter, store, queue, quarantine=quarantine, schema=schema)
+        worker = Worker(spec, adapter, store, queue, quarantine=quarantine, dlq=dlq, schema=schema)
         fake.clear_faults()
         fake.client.delete("/_inbox")
         return Rig(spec, queue, dlq, quarantine, fake, store, worker)
