@@ -211,6 +211,28 @@ worker so it consumes nothing and then drains all three tasks once the fault cle
 message held across a pause is never handed to a second receiver even though the queue's
 visibility timeout is shorter than the pause.
 
+## Operations
+
+Every worker writes a status row into the idempotency table under `status|<connector>` every
+few seconds: what its current run has delivered, deduplicated, quarantined, and dead lettered,
+how many SQS requests and DynamoDB items it has spent, its breaker state, the tokens left in
+its bucket, and its last error. `conduit ops summary` joins those rows to live queue depths
+read from SQS, so it needs to know neither where the workers run nor which port they serve
+metrics on. A connector whose worker has published nothing reads `no worker seen`, which is how
+one that never started is told apart from one that is merely idle.
+
+`conduit ops costs` reports what a run actually bought. The counters are per run rather than
+cumulative: each worker records where the store and queue counters stood when it started and
+reports the difference, so restarting a worker starts a new bill. Both views are also
+Prometheus metrics, `conduit_queue_depth{connector,queue,visibility}` and
+`conduit_billable_units{connector,service,unit}`, beside the delivery counters from earlier
+versions. `make demo` prints both blocks at the end of its run; the output below is from a real
+one.
+
+`tests/integration/test_ops.py` seeds a connector with three delivered tasks, one dead letter,
+one quarantined payload, and one still queued, then asserts those exact depths, the exact item
+counts behind the bill, and the rendered lines.
+
 ## Quick start
 
 ```
@@ -292,21 +314,28 @@ conduit submit FILE -c NAME [--repeat N]   enqueue tasks from JSON, JSONL, or CS
 conduit worker -c NAME [--metrics-port 9100] [--max-messages N] [--idle-polls N]
 conduit dlq list -c NAME [--limit N]       peek at dead letters without consuming them
 conduit dlq replay -c NAME [--limit N]     move dead letters back to the work queue
+conduit quarantine list -c NAME [--limit N]     payloads set aside, with the note that did it
+conduit quarantine redrive -c NAME [--limit N]  put them back after the fix
+conduit schema check [--schemas-dir DIR]   load the registry, exit 2 on a breaking change
+conduit ops summary                        queue depths and worker state per connector
+conduit ops costs                          objects and items written by each current run
 conduit config validate [--connectors-dir DIR]
 conduit config show                        resolved specs as JSON
 conduit queues ensure                      create queues and table directly, without Terraform
 ```
 
-Environment: `CONDUIT_CONNECTORS_DIR` (default `connectors`), `CONDUIT_TABLE` (default
-`conduit-idempotency`), `CONDUIT_AWS_ENDPOINT_URL` (LocalStack), `CONDUIT_JSON_LOGS`, plus the
-secret variables each YAML names. `${VAR:-default}` in a YAML value is expanded from the
+Environment: `CONDUIT_CONNECTORS_DIR` (default `connectors`), `CONDUIT_SCHEMAS_DIR` (default
+`schemas`), `CONDUIT_TABLE` (default `conduit-idempotency`), `CONDUIT_AWS_ENDPOINT_URL`
+(LocalStack), `CONDUIT_JSON_LOGS`, plus the secret variables each YAML names. `${VAR:-default}` in a YAML value is expanded from the
 environment; the demo uses that to point `base_url` and `target` at the fakes.
 
 ## Layout
 
 ```
-conduit/            package: adapters/, core/ (idempotency, retry, queue), worker, cli, metrics
+conduit/            package: adapters/, core/ (idempotency, retry, queue, ratelimit, breaker,
+                    schema), worker, ops, cli, metrics
 connectors/         one YAML per integration
+schemas/            one directory per connector, one file per schema version
 terraform/          root with for_each over connectors/, modules/{queue,idempotency-table,connector}
 fakes/              FastAPI stand-ins for Slack, Jira, and a webhook receiver (fault injection, inbox)
 deploy/             docker-compose.yml (LocalStack, fakes, workers, optional Prometheus)
@@ -315,6 +344,22 @@ tests/              unit (respx, moto), integration (LocalStack), terraform (pla
 ```
 
 ## Changelog
+
+### v5.0.0
+
+* Every worker publishes a status row into the idempotency table under `status|<connector>`:
+  run id, counts, breaker state, tokens left in the bucket, and last error, refreshed at most
+  every five seconds and once more on stop.
+* `conduit ops summary` joins those rows to live SQS depths and prints queue, dead-letter, and
+  quarantine depths with per-connector throughput, throttle state, breaker state, and last
+  error. A connector with no published row reads `no worker seen`.
+* `conduit ops costs` reports remote objects, SQS requests, and DynamoDB writes and reads for
+  the current run, priced at the us-east-1 on-demand list rates in `PRICE_PER_MILLION`.
+  Counters are per run: each worker subtracts the baseline it saw at startup.
+* `conduit_queue_depth{connector,queue,visibility}` and
+  `conduit_billable_units{connector,service,unit}` join the existing metrics.
+* `make demo` prints both ops blocks and writes the collected rows into
+  `demo/out/details.json`.
 
 ### v4.0.0
 
