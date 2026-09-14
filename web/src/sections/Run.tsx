@@ -37,6 +37,7 @@ interface Row {
   dedup: number;
   retried: number;
   dlq: number;
+  quarantine: number;
   waits: number;
 }
 
@@ -53,6 +54,7 @@ function rows(engine: Engine): Row[] {
       dedup: rt.worker.stats.deduplicated,
       retried: rt.worker.stats.retried,
       dlq: rt.dlq.messages.length,
+      quarantine: rt.quarantine.messages.length,
       waits: rt.worker.stats.rateLimitWaits,
     };
   });
@@ -229,6 +231,7 @@ export function Run() {
                     <th scope="col">retried</th>
                     <th scope="col">paced</th>
                     <th scope="col">DLQ</th>
+                    <th scope="col">quarantine</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -246,6 +249,7 @@ export function Run() {
                       <td className="mono run-warn">{r.retried}</td>
                       <td className="mono">{r.waits}</td>
                       <td className={`mono ${r.dlq ? "run-bad" : ""}`}>{r.dlq}</td>
+                      <td className={`mono ${r.quarantine ? "run-bad" : ""}`}>{r.quarantine}</td>
                     </tr>
                   ))}
                 </tbody>

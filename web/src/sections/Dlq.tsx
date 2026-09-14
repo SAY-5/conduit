@@ -36,7 +36,8 @@ export function Dlq() {
     engine.reset();
     const tasks = Array.from({ length: COUNT }, (_, i) => makeTask({ id: `${engine.runId}-webhook-crm-${String(i + 1).padStart(4, "0")}`, title: `Synthetic task ${i + 1} for webhook-crm`, body: `Body of task ${i + 1}`, priority: "normal", labels: ["webhook", "demo"] }));
     rt.target.setFaults({ hardFailTasks: new Set(tasks.map((t) => t.id)) });
-    await engine.submit("webhook-crm", tasks);
+    const malformed = makeTask({ id: `${engine.runId}-webhook-crm-bad`, title: "Record with a status the CRM schema does not allow", status: "archived", labels: ["webhook", "demo"] });
+    await engine.submit("webhook-crm", [...tasks, malformed]);
     refresh();
     await drain();
     setStage("loaded");
@@ -61,13 +62,15 @@ export function Dlq() {
   }, [engine, rt, refresh, drain, reduced]);
 
   const dead = rt.dlq.messages;
+  const held = rt.quarantine.messages;
+  const note = held[0]?.envelope.quarantine;
   const inbox = rt.target.inbox;
   const replayedCount = inbox.filter((e) => e.replayed).length;
 
   return (
     <section className="section" id="dlq" aria-labelledby="dlq-title">
       <div className="wrap">
-        <SectionHead eyebrow="03 / dead-letter queue + replay" id="dlq-title" title="Dead letters wait. Fix the integration, replay, drain to zero." lede="The worker only deletes a message after a successful delivery or a confirmed duplicate, so exhaustion is the only path into the DLQ. Replay moves messages back with attempt + 1 and a fresh receive count; the claim was released on failure, so a replay after the fix delivers normally." />
+        <SectionHead eyebrow="03 / dead-letter queue + replay" id="dlq-title" title="Dead letters wait. Fix the integration, replay, drain to zero." lede="The worker only deletes a message after a successful delivery or a confirmed duplicate, so exhaustion is the only path into the DLQ. A payload that fails its source schema never gets that far: the worker moves it to the quarantine queue instead. Replay moves messages back with attempt + 1 and a fresh receive count; the claim was released on failure, so a replay after the fix delivers normally." />
         <Reveal className="dlq-grid" delay={0.1}>
           <div className="glass dlq-panel">
             <div className="dlq-cli mono">
@@ -80,6 +83,11 @@ export function Dlq() {
                 <div className="meter-bar" aria-hidden>
                   <motion.span animate={{ width: `${(dead.length / COUNT) * 100}%` }} transition={{ duration: reduced ? 0 : 0.35 }} />
                 </div>
+              </div>
+              <div className={`meter ${held.length ? "meter-hot" : ""}`}>
+                <span className="stat-label">conduit-webhook-crm-quarantine</span>
+                <strong className="mono">{held.length}</strong>
+                <span className="muted mono small">{note ? `${note.stage} ${note.reason}: ${note.field}` : "schema failures, not DLQ"}</span>
               </div>
               <div className="meter meter-inbox">
                 <span className="stat-label">webhook fake inbox</span>
@@ -100,7 +108,7 @@ export function Dlq() {
               <button className="btn" onClick={() => void replay()} disabled={busy || dead.length === 0}>conduit dlq replay</button>
             </div>
             <p className="dlq-hint">
-              {stage === "empty" ? `Queue ${COUNT} tasks the webhook receiver rejects with 400. Each one is received twice (maxReceiveCount=2) and then moved to the DLQ by SQS.` : null}
+              {stage === "empty" ? `Queue ${COUNT} tasks the webhook receiver rejects with 400, plus one record whose status fails schemas/webhook-crm/v1.yaml. Each 400 is received twice (maxReceiveCount=2) and then moved to the DLQ by SQS; the malformed record goes straight to quarantine.` : null}
               {stage === "loaded" && faultOn ? "Replaying now would bounce every message straight back into the DLQ with replays + 1. Clear the fault first, or try it and see." : null}
               {stage === "loaded" && !faultOn ? "Fault cleared. Replay moves the dead letters back onto conduit-webhook-crm; the worker claims each key again and delivers." : null}
               {stage === "replaying" ? "Replaying: messages are back on the work queue with attempt + 1." : null}

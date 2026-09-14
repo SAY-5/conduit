@@ -7,6 +7,7 @@ const KIND_CLASS: Record<string, string> = {
   retry: "log-retry",
   fail: "log-fail",
   dlq: "log-dlq",
+  quarantine: "log-fail",
   replay: "log-replay",
   claim: "log-claim",
   in_progress: "log-retry",

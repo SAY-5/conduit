@@ -35,7 +35,7 @@ export function Ship() {
   return (
     <section className="section" id="ship" aria-labelledby="ship-title">
       <div className="wrap">
-        <SectionHead eyebrow="04 / one file ships an integration" id="ship-title" title="Drop in a fourth YAML. Terraform plans exactly its resources." lede="terraform/main.tf runs fileset() over connectors/, yamldecode()s each file, and instantiates module.connector once per file. The module derives a queue and DLQ joined by a redrive policy, a least-privilege IAM policy, role, and attachment for the worker, and one SecureString SSM placeholder per declared secret. Edit the file; the plan follows." />
+        <SectionHead eyebrow="04 / one file ships an integration" id="ship-title" title="Drop in a fourth YAML. Terraform plans exactly its resources." lede="terraform/main.tf runs fileset() over connectors/, yamldecode()s each file, and instantiates module.connector once per file. The module derives a work queue and DLQ joined by a redrive policy, a quarantine queue for payloads that fail their schema, a least-privilege IAM policy, role, and attachment for the worker, and one SecureString SSM placeholder per declared secret. Edit the file; the plan follows." />
         <Reveal className="ship-grid" delay={0.1}>
           <div className="glass ship-editor">
             <div className="ship-file">
@@ -47,7 +47,7 @@ export function Ship() {
             <div className="ship-presets">
               <span className="code-label">try</span>
               <button className="btn btn-sm" onClick={() => { setFilename("pager-oncall"); setYaml(NEW_CONNECTOR_YAML); }}>pager-oncall (slack)</button>
-              <button className="btn btn-sm" onClick={() => { setFilename("billing-jira"); setYaml(`type: jira\ntarget: BILL\nbase_url: https://billing.atlassian.net\nsecrets:\n  email: BILLING_JIRA_EMAIL\n  api_token: BILLING_JIRA_TOKEN\nqueue:\n  max_receive_count: 5\n  visibility_timeout_seconds: 90\n`); }}>billing-jira (two secrets, 8 resources)</button>
+              <button className="btn btn-sm" onClick={() => { setFilename("billing-jira"); setYaml(`type: jira\ntarget: BILL\nbase_url: https://billing.atlassian.net\nsecrets:\n  email: BILLING_JIRA_EMAIL\n  api_token: BILLING_JIRA_TOKEN\nqueue:\n  max_receive_count: 5\n  visibility_timeout_seconds: 90\n`); }}>billing-jira (two secrets, 9 resources)</button>
               <button className="btn btn-sm" onClick={() => { setFilename("audit-hook"); setYaml(`type: webhook\ntarget: https://audit.example.com/ingest\nsecrets:\n  signing_secret: AUDIT_HMAC_SECRET\nretry:\n  max_attempts: 3\n  base_seconds: 0.1\n  max_seconds: 0.05\n`); }}>audit-hook (invalid retry)</button>
             </div>
             {result.ok ? (
@@ -71,7 +71,7 @@ export function Ship() {
             <div className="glass ship-plan-head">
               <span className="mono muted">$ terraform -chdir=terraform plan -var-file=localstack.tfvars</span>
               {result.ok ? (
-                <strong className={`mono ${result.diff.add.length === 7 && !collision ? "plan-seven" : ""}`}>{result.diff.summary}</strong>
+                <strong className={`mono ${result.diff.add.length === 7 + Object.keys(result.spec.secrets).length && !collision ? "plan-expected" : ""}`}>{result.diff.summary}</strong>
               ) : (
                 <strong className="mono plan-err">Error: invalid connector file</strong>
               )}

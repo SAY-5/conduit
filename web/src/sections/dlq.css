@@ -2,7 +2,7 @@
 .dlq-panel { padding: 1.3rem 1.4rem; display: flex; flex-direction: column; gap: 1rem; }
 .dlq-side { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
 .dlq-cli { font-size: 0.82rem; color: var(--ivory); }
-.dlq-meters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.8rem; }
+.dlq-meters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.8rem; }
 .meter { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 0.8rem 0.9rem; background: rgba(5, 10, 9, 0.5); display: flex; flex-direction: column; gap: 0.4rem; transition: border-color 0.4s, box-shadow 0.4s; }
 .meter strong { font-size: 2.2rem; font-weight: 600; line-height: 1; color: var(--ivory); }
 .meter-bar { height: 8px; border-radius: 999px; background: rgba(236, 233, 220, 0.06); overflow: hidden; }

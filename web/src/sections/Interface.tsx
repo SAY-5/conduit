@@ -4,7 +4,7 @@ import { buildAdapter, FakeTarget, type RenderedRequest } from "../sim/adapters"
 import { idempotencyKey, keyMaterial } from "../sim/idempotency";
 import { makeTask } from "../sim/models";
 import { Rng } from "../sim/prng";
-import { CONNECTOR_NAMES, CONNECTOR_YAML, dlqName, loadAll, queueName } from "../sim/specs";
+import { CONNECTOR_NAMES, CONNECTOR_YAML, dlqName, loadAll, quarantineName, queueName } from "../sim/specs";
 import "./interface.css";
 
 const ADAPTER_PY = `class Adapter(abc.ABC):
@@ -92,7 +92,7 @@ export function Interface() {
                 <div><dt>rate_limit</dt><dd className="mono">{spec.rateLimit.requestsPerSecond} requests/s</dd></div>
                 <div>
                   <dt>queue</dt>
-                  <dd className="mono">{queueName(spec)} → {dlqName(spec)} after <b>maxReceiveCount={spec.queue.maxReceiveCount}</b> · visibility {spec.queue.visibilityTimeoutSeconds}s</dd>
+                  <dd className="mono">{queueName(spec)} → {dlqName(spec)} after <b>maxReceiveCount={spec.queue.maxReceiveCount}</b> · schema failures → {quarantineName(spec)} · visibility {spec.queue.visibilityTimeoutSeconds}s</dd>
                 </div>
                 <div><dt>idempotency ttl</dt><dd className="mono">{spec.idempotencyTtlSeconds}s</dd></div>
               </dl>
