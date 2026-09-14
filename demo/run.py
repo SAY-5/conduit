@@ -124,6 +124,17 @@ def wait_for_drain(queues: dict[str, SqsQueue], timeout: float) -> float:
     raise SystemExit(f"queues did not drain within {timeout}s: {remaining}")
 
 
+def wait_for_fresh_status(statuses: StatusStore, specs, since: float, timeout: float) -> None:
+    """Workers publish on every idle poll, so a row newer than ``since`` reflects the drain."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        rows = [statuses.read(name) for name in specs]
+        if all(row is not None and row.updated_at >= since for row in rows):
+            return
+        time.sleep(1)
+    raise SystemExit(f"workers did not publish a status row within {timeout}s")
+
+
 def terraform_plan_for_new_yaml() -> tuple[str, list[str]]:
     with tempfile.TemporaryDirectory() as tmp:
         connectors = Path(tmp) / "connectors"
@@ -297,11 +308,12 @@ def main() -> int:
     say("terraform plan with a fourth connector YAML")
     plan_summary, plan_created = terraform_plan_for_new_yaml()
 
-    say("reading the ops summary back from SQS and the workers' status rows")
+    say("waiting for every worker to publish a status row newer than the drain")
     statuses = StatusStore(
         os.environ.get("CONDUIT_TABLE", "conduit-idempotency"),
         client=boto3.client("dynamodb", endpoint_url=LOCALSTACK, region_name="us-east-1"),
     )
+    wait_for_fresh_status(statuses, specs, since=time.time(), timeout=90)
     ops_rows = collect(specs, sqs, statuses)
     ops_summary = render_summary(ops_rows)
     ops_costs = render_costs(ops_rows)
