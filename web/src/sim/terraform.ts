@@ -1,7 +1,7 @@
 // Model of terraform/: fileset(connectors_dir, "*.yaml") -> yamldecode -> module.connector for_each.
 // Derives the same resource set the real modules create, and diffs two plans.
 
-import { dlqName, loadSpec, queueName, type ConnectorSpec } from "./specs";
+import { dlqName, loadSpec, quarantineName, queueName, type ConnectorSpec } from "./specs";
 
 export interface PlannedResource {
   address: string;
@@ -17,6 +17,7 @@ export function connectorResources(spec: ConnectorSpec): PlannedResource[] {
   const full = `${NAME_PREFIX}-${spec.name}`;
   const q = queueName(spec);
   const dlq = dlqName(spec);
+  const quarantine = quarantineName(spec);
   const out: PlannedResource[] = [
     {
       address: `${mod}.aws_iam_policy.worker`,
@@ -24,7 +25,7 @@ export function connectorResources(spec: ConnectorSpec): PlannedResource[] {
       module: mod,
       attributes: {
         name: `${full}-worker`,
-        policy: `sqs:* on ${q}, ${dlq}; dynamodb:PutItem/GetItem/UpdateItem/DeleteItem on conduit-idempotency` + (Object.keys(spec.secrets).length ? `; ssm:GetParameter on ${Object.keys(spec.secrets).length} parameter(s)` : ""),
+        policy: `sqs:* on ${q}, ${dlq}, ${quarantine}; dynamodb:PutItem/GetItem/UpdateItem/DeleteItem on conduit-idempotency` + (Object.keys(spec.secrets).length ? `; ssm:GetParameter on ${Object.keys(spec.secrets).length} parameter(s)` : ""),
       },
     },
     {
@@ -66,6 +67,12 @@ export function connectorResources(spec: ConnectorSpec): PlannedResource[] {
         receive_wait_time_seconds: "20",
         redrive_policy: JSON.stringify({ deadLetterTargetArn: `arn:aws:sqs:us-east-1:000000000000:${dlq}`, maxReceiveCount: spec.queue.maxReceiveCount }),
       },
+    },
+    {
+      address: `${mod}.module.queue.aws_sqs_queue.quarantine`,
+      type: "aws_sqs_queue",
+      module: `${mod}.module.queue`,
+      attributes: { name: quarantine, message_retention_seconds: String(spec.queue.dlqRetentionSeconds), sqs_managed_sse_enabled: "true" },
     },
     {
       address: `${mod}.module.queue.aws_sqs_queue_redrive_allow_policy.dlq`,

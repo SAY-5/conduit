@@ -82,6 +82,7 @@ export const REQUIRED_SECRETS: Record<ConnectorType, string[]> = {
 
 export const queueName = (spec: ConnectorSpec) => `conduit-${spec.name}`;
 export const dlqName = (spec: ConnectorSpec) => `conduit-${spec.name}-dlq`;
+export const quarantineName = (spec: ConnectorSpec) => `conduit-${spec.name}-quarantine`;
 
 export const CONNECTOR_YAML: Record<string, string> = {
   "jira-support": `# Create or update an issue in the SUP project for every task revision.
