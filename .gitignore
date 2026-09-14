@@ -17,3 +17,4 @@ terraform/*.tfplan
 terraform/localstack.tfstate*
 deploy/.localstack/
 demo/out/
+.scratch/
