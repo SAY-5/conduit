@@ -264,7 +264,7 @@ two attempts of 30 tasks and the webhook fake hard-fails 10 tasks with 400. It t
 webhook fault, replays the dead letters, and plans a fourth connector. Output from a real run:
 
 ```
-conduit demo summary (run D7DC282, LocalStack at http://localhost:4566)
+conduit demo summary (run DF15F0D, LocalStack at http://localhost:4566)
 ========================================================================
 tasks submitted        300  (240 unique + 60 duplicate resubmits)
 deduplicated           60  (must equal duplicates: ok)
@@ -273,12 +273,12 @@ delivered per connector
   slack-ops        80 delivered,  80 unique keys,  20 deduplicated (slack fake inbox)
   webhook-crm      70 delivered,  70 unique keys,  20 deduplicated (webhook fake inbox)
 retried                60  (jira fake returned 429 60 times for 30 tasks)
-  backoff evidence     attempt 1 -> 30 retries, attempt 2 -> 30 retries; delay min/median/max 0.004s / 0.176s / 0.455s (policy base 0.25s x2, cap 8s, full jitter)
+  backoff evidence     attempt 1 -> 30 retries, attempt 2 -> 30 retries; delay min/median/max 0.019s / 0.154s / 0.497s (policy base 0.25s x2, cap 8s, full jitter)
 dead-lettered          10  (must equal hard failures 10: ok); conduit-webhook-crm-dlq after maxReceiveCount=2
   dead letters         0001, 0002, 0003, 0004, 0005, 0006, 0007, 0008, 0009, 0010
 DLQ replay             10 replayed after clearing the fault; DLQ now 0; webhook delivered 80/80 in 2.0s
-delivery latency       p50 2.0 ms, p95 458.9 ms (worker attempt-to-ack, n=230)
-end-to-end latency     p50 3.66 s, p95 17.83 s (submit-to-remote-receipt, n=230); queues drained in 21.5s
+delivery latency       p50 2.0 ms, p95 354.5 ms (worker attempt-to-ack, n=230)
+end-to-end latency     p50 3.32 s, p95 13.24 s (submit-to-remote-receipt, n=230); queues drained in 16.4s
 new integration from one file (connectors/pager-oncall.yaml, 10 lines):
   Plan: 8 to add, 0 to change, 0 to destroy.
   + module.connector["pager-oncall"].aws_iam_policy.worker
@@ -293,20 +293,20 @@ new integration from one file (connectors/pager-oncall.yaml, 10 lines):
 conduit ops summary
   connector         queue inflight   dlq  quar  delivered  per min  throttle  breaker  last error
   -----------------------------------------------------------------------------------------------
-  jira-support          0        0     0     0         80     86.3   5.0 tok   closed  
-  slack-ops             0        0     0     0         80     76.7   5.0 tok   closed  
-  webhook-crm           0        0     0     0         80     76.3  10.0 tok   closed  permanent D7DC282-webhook-crm-0003: HTTP 400: {"error":"injected","reason":"hard_fail"}
+  jira-support          0        0     0     0         80     55.2   5.0 tok   closed
+  slack-ops             0        0     0     0         80     49.5   5.0 tok   closed
+  webhook-crm           0        0     0     0         80     51.3  10.0 tok   closed  permanent DF15F0D-webhook-crm-0006: HTTP 400: {"error":"injected","reason":"hard_fail"}
   -----------------------------------------------------------------------------------------------
   total                 0        0     0     0        240
 
 conduit ops costs
   connector              run  objects  sqs req  ddb write  ddb read       usd
   ---------------------------------------------------------------------------
-  jira-support       0905555       80      171        260       100    0.0004
-  slack-ops          BDA32F8       80      112        260       100    0.0004
-  webhook-crm        16AC55A       80      136        300       100    0.0005
+  jira-support       BF53F08       80      188        260       100    0.0004
+  slack-ops          6A4C8A1       80      129        260       100    0.0004
+  webhook-crm        05A284F       80      153        300       100    0.0005
   ---------------------------------------------------------------------------
-  total                           240      419        820       300    0.0013
+  total                           240      470        820       300    0.0013
   priced at us-east-1 on-demand list: sqs_requests $0.4/M, dynamodb_writes $1.25/M, dynamodb_reads $0.25/M
 ========================================================================
 ```
