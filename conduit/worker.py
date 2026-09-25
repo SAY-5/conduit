@@ -71,7 +71,7 @@ class Worker:
         store: IdempotencyStore,
         queue: SqsQueue,
         *,
-        quarantine: SqsQueue | None = None,
+        quarantine: SqsQueue,
         dlq: SqsQueue | None = None,
         schema: SourceSchema | None = None,
         statuses: StatusStore | None = None,
@@ -186,15 +186,23 @@ class Worker:
         )
 
     def publish_status(self, *, force: bool = False) -> None:
-        """Write the status row, at most once every ``STATUS_INTERVAL_SECONDS``."""
+        """Write the status row, at most once every ``STATUS_INTERVAL_SECONDS``.
+
+        The row is a heartbeat, so a write that DynamoDB refuses is logged and
+        tried again on the next tick instead of ending the run.
+        """
         if self.statuses is None:
             return
         now = self._clock()
         if not force and now - self._published_at < STATUS_INTERVAL_SECONDS:
             return
-        self._published_at = now
         status = self.status()
-        self.statuses.publish(status)
+        try:
+            self.statuses.publish(status)
+        except (BotoCoreError, ClientError) as exc:
+            self._log.warning("status.publish_failed", error=str(exc))
+            return
+        self._published_at = now
         for service, unit, value in (
             ("sqs", "requests", status.sqs_requests),
             ("dynamodb", "writes", status.dynamodb_writes),
@@ -367,8 +375,7 @@ class Worker:
         """Move a payload that can never be delivered off the work queue, not into the DLQ."""
         name = self.spec.name
         env = message.envelope
-        if self.quarantine is not None:
-            self.quarantine.send(env.model_copy(update={"quarantine": note}))
+        self.quarantine.send(env.model_copy(update={"quarantine": note}))
         self.queue.delete(message.receipt_handle)
         self.stats.quarantined += 1
         self._note_error(f"quarantined {env.task.id}: {note.detail}")

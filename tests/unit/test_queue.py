@@ -85,7 +85,7 @@ def test_consumers_continue_after_an_invalid_only_response(consumer, monkeypatch
     from typer.testing import CliRunner
 
     from tests.unit.test_cli import CONNECTORS
-    from tests.unit.test_worker import ScriptedAdapter
+    from tests.unit.test_worker import FakeQueue, ScriptedAdapter
 
     client = boto3.client(
         "sqs",
@@ -114,9 +114,9 @@ def test_consumers_continue_after_an_invalid_only_response(consumer, monkeypatch
                 name="slack-ops", type="slack", target="#ops", secrets={"token": "SLACK_BOT_TOKEN"}
             )
             adapter = ScriptedAdapter(spec, {})
-            stats = Worker(spec, adapter, MemoryIdempotencyStore(), queue).run(
-                idle_polls=1, wait_seconds=0
-            )
+            stats = Worker(
+                spec, adapter, MemoryIdempotencyStore(), queue, quarantine=FakeQueue(1)
+            ).run(idle_polls=1, wait_seconds=0)
             assert stats.delivered == 1
         else:
             stub.add_response("change_message_visibility", {})

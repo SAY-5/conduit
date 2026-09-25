@@ -114,7 +114,7 @@ def make_worker(spec, script, *, quarantine=None, schema=None, clock=time.monoto
         adapter,
         MemoryIdempotencyStore(),
         queue,
-        quarantine=quarantine,
+        quarantine=quarantine or FakeQueue(spec.queue.max_receive_count),
         schema=schema,
         sleep=lambda _: None,
         clock=clock,
@@ -271,6 +271,7 @@ def test_rate_limit_spacing(spec):
         ScriptedAdapter(spec, {}),
         MemoryIdempotencyStore(),
         queue,
+        quarantine=FakeQueue(2),
         sleep=sleep,
         clock=lambda: clock["t"],
     )
