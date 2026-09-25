@@ -1,4 +1,4 @@
-"""SQS producer/consumer with long polling, visibility extension, batch delete, and DLQ tools."""
+"""SQS producer/consumer with long polling, visibility extension, and DLQ and quarantine tools."""
 
 from __future__ import annotations
 
@@ -55,6 +55,11 @@ class SqsQueue:
         self.queue_url = queue_url
         self._client = client or aws_client("sqs")
         self.requests: Counter[str] = Counter()
+
+    @property
+    def client(self) -> Any:
+        """The boto3 SQS client behind this handle."""
+        return self._client
 
     def _called(self, api: str) -> None:
         self.requests[api] += 1
@@ -158,15 +163,6 @@ class SqsQueue:
         self._called("delete_message")
         self._client.delete_message(QueueUrl=self.queue_url, ReceiptHandle=receipt_handle)
 
-    def delete_batch(self, receipt_handles: list[str]) -> None:
-        for start in range(0, len(receipt_handles), BATCH):
-            chunk = receipt_handles[start : start + BATCH]
-            self._called("delete_message_batch")
-            self._client.delete_message_batch(
-                QueueUrl=self.queue_url,
-                Entries=[{"Id": str(i), "ReceiptHandle": rh} for i, rh in enumerate(chunk)],
-            )
-
     def depth(self) -> dict[str, int]:
         self._called("get_queue_attributes")
         attrs = self._client.get_queue_attributes(
@@ -178,9 +174,6 @@ class SqsQueue:
             ],
         )["Attributes"]
         return {k: int(v) for k, v in attrs.items()}
-
-    def purge(self) -> None:
-        self._client.purge_queue(QueueUrl=self.queue_url)
 
 
 def _attributes(envelope: Envelope) -> dict[str, Any]:
@@ -225,7 +218,7 @@ def ensure_queues(
 
 
 def redrive_policy(queue: SqsQueue) -> dict[str, Any] | None:
-    attrs = queue._client.get_queue_attributes(
+    attrs = queue.client.get_queue_attributes(
         QueueUrl=queue.queue_url, AttributeNames=["RedrivePolicy"]
     )["Attributes"]
     raw = attrs.get("RedrivePolicy")
