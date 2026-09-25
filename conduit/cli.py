@@ -60,6 +60,23 @@ TableName = Annotated[
 ]
 
 
+class _StderrLogger:
+    """Print each rendered line to whatever ``sys.stderr`` is at write time.
+
+    Diagnostics go to stderr so ``dlq list`` and ``quarantine list`` keep
+    stdout as one JSON line per message. Pinning the stream object at
+    configure time would break an in-process run: typer's ``CliRunner``
+    swaps ``sys.stderr`` for the invocation and closes it afterwards, and
+    every later log line in the process would raise on the closed file.
+    """
+
+    def msg(self, message: str) -> None:
+        print(message, file=sys.stderr, flush=True)
+
+    log = debug = info = warn = warning = msg
+    fatal = failure = err = error = critical = exception = msg
+
+
 def _configure_logging(json_logs: bool) -> None:
     level = os.environ.get("CONDUIT_LOG_LEVEL", "INFO").upper()
     logging.basicConfig(level=level, stream=sys.stderr, format="%(message)s")
@@ -71,7 +88,7 @@ def _configure_logging(json_logs: bool) -> None:
             renderer,
         ],
         wrapper_class=structlog.make_filtering_bound_logger(getattr(logging, level, logging.INFO)),
-        logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
+        logger_factory=lambda *_: _StderrLogger(),
     )
 
 
