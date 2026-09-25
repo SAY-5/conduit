@@ -18,9 +18,11 @@ import time
 import uuid
 from collections import Counter
 from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
 
 import boto3
+import conduit
 import httpx
 from conduit.config import load_all
 from conduit.core.idempotency import idempotency_key
@@ -60,6 +62,27 @@ queue:
 
 def say(msg: str) -> None:
     print(f"[demo] {msg}", flush=True)
+
+
+def provenance() -> dict[str, str]:
+    """What produced this run: the commit, the package version, the LocalStack image, the date."""
+    git = subprocess.run(
+        ["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    compose = (ROOT / "deploy" / "docker-compose.yml").read_text()
+    image = next(
+        (ln.split("image:", 1)[1].strip() for ln in compose.splitlines() if "localstack/" in ln),
+        "unknown image",
+    )
+    return {
+        "commit": git.stdout.strip() or "unknown commit",
+        "version": conduit.__version__,
+        "localstack": image,
+        "date": datetime.now(UTC).strftime("%Y-%m-%d"),
+    }
 
 
 def wait_http(url: str, timeout: float = 120) -> None:
@@ -112,6 +135,7 @@ def queue_totals(queue: SqsQueue) -> int:
 def wait_for_drain(queues: dict[str, SqsQueue], timeout: float) -> float:
     started = time.monotonic()
     stable = 0
+    remaining: dict[str, int] = {}
     while time.monotonic() - started < timeout:
         remaining = {name: queue_totals(q) for name, q in queues.items()}
         if all(v == 0 for v in remaining.values()):
@@ -326,10 +350,18 @@ def main() -> int:
     all_latency = [x for n in specs for x in latencies[n]]
     all_e2e = [x for n in specs for x in end_to_end[n]]
     by_attempt = Counter(int(e["attempt"]) for e in retries["jira-support"])
+    delay_evidence = (
+        f"delay min/median/max {min(all_delays):.3f}s / {percentile(all_delays, 50):.3f}s / {max(all_delays):.3f}s"
+        if all_delays
+        else "no delivery.retry events observed"
+    )
 
+    source = provenance()
     lines = [
         "",
         f"conduit demo summary (run {run_id}, LocalStack at {LOCALSTACK})",
+        f"measured at commit {source['commit']}, conduit {source['version']}, "
+        f"{source['localstack']}, {source['date']}",
         "=" * 72,
         f"tasks submitted        {submitted}  ({total_unique} unique + {duplicates} duplicate resubmits)",
         f"deduplicated           {total_dedup}  (must equal duplicates: {'ok' if total_dedup == duplicates else 'MISMATCH'})",
@@ -345,8 +377,7 @@ def main() -> int:
         f"retried                {total_retried}  (jira fake returned 429 {jira_faults['rejected']} times "
         f"for {len(jira_faults['rate_limit_hits'])} tasks)",
         f"  backoff evidence     attempt 1 -> {by_attempt.get(1, 0)} retries, attempt 2 -> {by_attempt.get(2, 0)} retries; "
-        f"delay min/median/max {min(all_delays):.3f}s / {percentile(all_delays, 50):.3f}s / {max(all_delays):.3f}s "
-        f"(policy base 0.25s x2, cap 8s, full jitter)",
+        f"{delay_evidence} (policy base 0.25s x2, cap 8s, full jitter)",
         f"dead-lettered          {total_dead}  (must equal hard failures {WEBHOOK_HARD_FAIL_TASKS}: "
         f"{'ok' if total_dead == WEBHOOK_HARD_FAIL_TASKS else 'MISMATCH'}); "
         f"conduit-webhook-crm-dlq after maxReceiveCount={specs['webhook-crm'].queue.max_receive_count}",
@@ -373,6 +404,7 @@ def main() -> int:
         json.dumps(
             {
                 "run_id": run_id,
+                "provenance": source,
                 "metrics_delta": delta,
                 "replay_metrics": replay_metrics,
                 "dedup_logged": dedup_logged,
@@ -386,6 +418,8 @@ def main() -> int:
     )
 
     problems = []
+    if not all_delays:
+        problems.append("no delivery.retry events observed: the jira 429 fault did not fire")
     if total_dedup != duplicates:
         problems.append(f"deduplicated {total_dedup} != duplicates {duplicates}")
     if total_dead != WEBHOOK_HARD_FAIL_TASKS:

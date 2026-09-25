@@ -71,7 +71,7 @@ class Worker:
         store: IdempotencyStore,
         queue: SqsQueue,
         *,
-        quarantine: SqsQueue | None = None,
+        quarantine: SqsQueue,
         dlq: SqsQueue | None = None,
         schema: SourceSchema | None = None,
         statuses: StatusStore | None = None,
@@ -133,7 +133,7 @@ class Worker:
                 self._pause_while_open([], stop)
                 continue
             batch = self.queue.receive(wait_seconds=wait_seconds)
-            if not batch:
+            if getattr(batch, "received_count", len(batch)) == 0:
                 idle += 1
                 self.refresh_queue_depth()
                 # An idle worker still has to say so, or the last row an operator
@@ -186,15 +186,23 @@ class Worker:
         )
 
     def publish_status(self, *, force: bool = False) -> None:
-        """Write the status row, at most once every ``STATUS_INTERVAL_SECONDS``."""
+        """Write the status row, at most once every ``STATUS_INTERVAL_SECONDS``.
+
+        The row is a heartbeat, so a write that DynamoDB refuses is logged and
+        tried again on the next tick instead of ending the run.
+        """
         if self.statuses is None:
             return
         now = self._clock()
         if not force and now - self._published_at < STATUS_INTERVAL_SECONDS:
             return
-        self._published_at = now
         status = self.status()
-        self.statuses.publish(status)
+        try:
+            self.statuses.publish(status)
+        except (BotoCoreError, ClientError) as exc:
+            self._log.warning("status.publish_failed", error=str(exc))
+            return
+        self._published_at = now
         for service, unit, value in (
             ("sqs", "requests", status.sqs_requests),
             ("dynamodb", "writes", status.dynamodb_writes),
@@ -242,12 +250,6 @@ class Worker:
         if note is not None:
             return self._quarantine(message, note, logger)
 
-        if not self.breaker.allow():
-            hold = int(self.breaker.remaining()) + 1
-            self.queue.extend_visibility(message.receipt_handle, hold)
-            logger.info("delivery.breaker_open", hold=hold)
-            return None
-
         claim = self.store.claim(key, connector=name, task_id=task.id)
         if not claim.acquired:
             if claim.duplicate:
@@ -265,6 +267,19 @@ class Worker:
                 )
             self.queue.extend_visibility(message.receipt_handle, IN_PROGRESS_RECHECK_SECONDS)
             logger.info("delivery.in_progress_elsewhere", recheck=IN_PROGRESS_RECHECK_SECONDS)
+            return None
+
+        # The claim comes first so a duplicate or a key held elsewhere never spends
+        # the half-open probe; only a delivery attempt may take it. A message the
+        # breaker turns away is held for at least the queue's visibility timeout
+        # so it cannot cycle through receives while the target is down.
+        if not self.breaker.allow():
+            self.store.release(key)
+            hold = max(
+                self.spec.queue.visibility_timeout_seconds, int(self.breaker.remaining()) + 1
+            )
+            self.queue.extend_visibility(message.receipt_handle, hold)
+            logger.info("delivery.breaker_open", hold=hold)
             return None
 
         remote_id = self.store.latest(name, task.id) if task.version > 1 else None
@@ -319,6 +334,11 @@ class Worker:
                 attempts=message.receive_count,
                 detail=str(err),
             )
+        finally:
+            # A probe whose retries exhausted on 429 reached no verdict about the
+            # target; hand it back so the breaker does not stay half open behind a
+            # probe nothing will ever release.
+            self.breaker.abandon_probe()
 
         elapsed = self._clock() - started
         self._note_target_ok(logger)
@@ -355,8 +375,7 @@ class Worker:
         """Move a payload that can never be delivered off the work queue, not into the DLQ."""
         name = self.spec.name
         env = message.envelope
-        if self.quarantine is not None:
-            self.quarantine.send(env.model_copy(update={"quarantine": note}))
+        self.quarantine.send(env.model_copy(update={"quarantine": note}))
         self.queue.delete(message.receipt_handle)
         self.stats.quarantined += 1
         self._note_error(f"quarantined {env.task.id}: {note.detail}")

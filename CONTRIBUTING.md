@@ -36,6 +36,8 @@ it). Terraform tests need the `terraform` binary and network access for the firs
 
 * Conventional commit subjects on one line (`feat:`, `fix:`, `test:`, `docs:`, `chore:`).
 * Ruff is the formatter and linter (line length 100). Terraform is `terraform fmt` clean.
-* Tests accompany behaviour changes. Unit tests must not need Docker.
+* Tests accompany behaviour changes. Unit tests must not need Docker. `make test-unit` fails
+  below 85% line coverage of `conduit/` (87% when the floor was set; the remainder is the
+  AWS-facing code the LocalStack integration suite covers).
 * No credentials in YAML or code; secrets are env var names resolved at runtime and SSM
   placeholders in Terraform.

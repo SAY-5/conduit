@@ -51,14 +51,58 @@ def test_throttle_holds_the_configured_rate_over_a_window(rig_factory):
 
 
 def test_retry_after_pauses_the_connector_not_just_the_message(rig_factory):
-    rig = rig_factory("jira-support", rate_limit=RateLimit(requests_per_second=100, burst=10))
-    rig.fake.faults(rate_limit_tasks=["RA-1"], rate_limit_count=1)
-    rig.submit(task("RA-1"), task("RA-2"))
+    # With no in-process retry the throttled message does not sleep through its
+    # own Retry-After, so the only thing that can hold RA-2 back is the penalty
+    # the connector's bucket took from RA-1's header.
+    pause = 2
+    rig = rig_factory(
+        "jira-support",
+        retry=NO_IN_PROCESS_RETRY,
+        rate_limit=RateLimit(requests_per_second=100, burst=10),
+        queue=QueueSpec(max_receive_count=5),
+    )
+    rig.fake.faults(rate_limit_tasks=["RA-1"], rate_limit_count=1, retry_after_seconds=pause)
+    rig.submit(task("RA-1"))
+    started = time.time()
+    rig.worker.run(max_messages=1, wait_seconds=2)
+    assert rig.worker.stats.failed == 1 and rig.worker.stats.retry_after_honored == 1
+    assert rig.fake.inbox()["count"] == 0
+
+    rig.submit(task("RA-2"))
     stats = rig.run()
 
-    assert stats.delivered == 2 and stats.retried == 1
-    assert stats.retry_after_honored == 1
-    assert rig.fake.inbox()["count"] == 2
+    assert stats.delivered == 2 and stats.retried == 0
+    assert stats.rate_limit_waits >= 1 and stats.rate_limit_wait_seconds >= 1.0
+    inbox = rig.fake.inbox()
+    assert inbox["count"] == 2 and inbox["unique_keys"] == 2
+    received = {e["task_id"]: e["received_at"] for e in inbox["entries"]}
+    assert received["RA-2"] >= started + pause - 0.05
+    assert list_dead_letters(rig.dlq) == []
+
+
+def test_an_outage_that_recovers_into_429s_still_drains(rig_factory):
+    rig = rig_factory(
+        "jira-support",
+        retry=NO_IN_PROCESS_RETRY,
+        breaker=BreakerSpec(failure_threshold=1, recovery_seconds=1.0),
+        queue=QueueSpec(max_receive_count=3, visibility_timeout_seconds=2),
+    )
+    rig.fake.faults(outage=True)
+    rig.submit(task("OR-1"), task("OR-2"))
+    rig.worker.run(max_messages=1, wait_seconds=2)
+    assert rig.worker.breaker.state is BreakerState.OPEN
+
+    # The target comes back throttling: the first probe is answered 429, which
+    # says nothing about the outage, so the next delivery must probe instead.
+    rig.fake.faults(rate_limit_tasks=["OR-1", "OR-2"], rate_limit_count=1)
+    time.sleep(rig.worker.breaker.remaining() + 0.1)
+    stats = rig.worker.run(idle_polls=3, wait_seconds=1)
+
+    assert stats.delivered == 2 and stats.dead_lettered == 0
+    assert rig.worker.breaker.state is BreakerState.CLOSED
+    inbox = rig.fake.inbox()
+    assert inbox["count"] == 2 and inbox["unique_keys"] == 2
+    assert list_dead_letters(rig.dlq) == []
 
 
 def test_a_failing_downstream_pauses_the_source_then_it_resumes(rig_factory):

@@ -24,8 +24,10 @@ format:
 	$(UV) run ruff format .
 	terraform fmt -recursive terraform
 
-test-unit:        ## fast tests, no Docker
-	$(UV) run pytest tests/unit -q
+COV_FLOOR ?= 85
+
+test-unit:        ## fast tests, no Docker; fails under $(COV_FLOOR)% line coverage of conduit/
+	$(UV) run pytest tests/unit -q --cov=conduit --cov-report=term-missing:skip-covered --cov-fail-under=$(COV_FLOOR)
 
 test-integration: ## needs LocalStack (make up)
 	CONDUIT_LOCALSTACK_URL=$(LOCALSTACK_URL) $(UV) run pytest tests/integration tests/terraform -q -m "integration or terraform"

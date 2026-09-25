@@ -11,6 +11,22 @@ env:
   AWS_DEFAULT_REGION: us-east-1
 
 jobs:
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - run: npm run selfcheck
+
   python:
     runs-on: ubuntu-latest
     services:
@@ -29,16 +45,16 @@ jobs:
           --health-retries 40
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: astral-sh/setup-uv@v6
         with:
-          version: "0.5.4"
+          version: "0.11.7"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: uv sync --all-extras --frozen
       - run: uv run ruff check .
       - run: uv run ruff format --check .
-      - run: uv run pytest tests/unit -q
+      - run: uv run pytest tests/unit -q --cov=conduit --cov-report=term-missing:skip-covered --cov-fail-under=85
       - run: uv run pytest tests/integration -q
         env:
           CONDUIT_LOCALSTACK_URL: http://localhost:4566
@@ -64,9 +80,9 @@ jobs:
         with:
           terraform_version: "1.5.7"
           terraform_wrapper: false
-      - uses: astral-sh/setup-uv@v3
+      - uses: astral-sh/setup-uv@v6
         with:
-          version: "0.5.4"
+          version: "0.11.7"
       - run: terraform -chdir=terraform fmt -check -recursive
       - run: terraform -chdir=terraform init -input=false
       - run: terraform -chdir=terraform validate

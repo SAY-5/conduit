@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import structlog
 from conduit.cli import app
 from conduit.models import Task
 from typer.testing import CliRunner
@@ -82,3 +83,24 @@ def test_schema_check_refuses_a_breaking_change(tmp_path: Path):
     assert result.exit_code == 2
     assert "acme/v2 is a breaking change from v1" in result.output
     assert "title: became required" in result.output
+
+
+class EmptyQueue:
+    name = "conduit-slack-ops-dlq"
+
+    def receive(self, **_):
+        return []
+
+
+def test_logging_configured_inside_the_runner_still_writes_once_it_exits(monkeypatch, capsys):
+    monkeypatch.setattr("conduit.cli.SqsQueue.by_name", lambda _: EmptyQueue())
+    saved = structlog.get_config().copy()
+    try:
+        result = CliRunner().invoke(
+            app, ["dlq", "list", "-c", "slack-ops", "--connectors-dir", CONNECTORS]
+        )
+        assert result.exit_code == 0, result.output
+        structlog.get_logger().warning("after.runner")
+    finally:
+        structlog.configure(**saved)
+    assert "after.runner" in capsys.readouterr().err

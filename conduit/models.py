@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field
 
 
 class Task(BaseModel):
@@ -78,6 +78,6 @@ class Envelope(BaseModel):
     task: Task
     connector: str
     idempotency_key: str
-    submitted_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    submitted_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
     attempt: int = 0
     quarantine: QuarantineNote | None = None

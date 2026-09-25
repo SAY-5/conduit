@@ -1,4 +1,4 @@
-"""SQS producer/consumer with long polling, visibility extension, batch delete, and DLQ tools."""
+"""SQS producer/consumer with long polling, visibility extension, and DLQ and quarantine tools."""
 
 from __future__ import annotations
 
@@ -10,12 +10,15 @@ from dataclasses import dataclass
 from typing import Any
 
 import boto3
+import structlog
 from botocore.exceptions import ClientError
+from pydantic import ValidationError
 
 from conduit.config import ConnectorSpec
 from conduit.models import Envelope
 
 BATCH = 10
+log = structlog.get_logger()
 
 
 def aws_client(service: str, **kwargs: Any):
@@ -33,6 +36,14 @@ class Message:
     receive_count: int
 
 
+class MessageBatch(list[Message]):
+    """Valid envelopes plus the receive count before filtering malformed bodies."""
+
+    def __init__(self, received_count: int) -> None:
+        super().__init__()
+        self.received_count = received_count
+
+
 class SqsQueue:
     """One queue. ``requests`` counts the API calls made through this handle.
 
@@ -44,6 +55,11 @@ class SqsQueue:
         self.queue_url = queue_url
         self._client = client or aws_client("sqs")
         self.requests: Counter[str] = Counter()
+
+    @property
+    def client(self) -> Any:
+        """The boto3 SQS client behind this handle."""
+        return self._client
 
     def _called(self, api: str) -> None:
         self.requests[api] += 1
@@ -98,7 +114,7 @@ class SqsQueue:
 
     def receive(
         self, *, max_messages: int = BATCH, wait_seconds: int = 20, visibility: int | None = None
-    ) -> list[Message]:
+    ) -> MessageBatch:
         params: dict[str, Any] = {
             "QueueUrl": self.queue_url,
             "MaxNumberOfMessages": max(1, min(BATCH, max_messages)),
@@ -110,13 +126,26 @@ class SqsQueue:
             params["VisibilityTimeout"] = visibility
         self._called("receive_message")
         response = self._client.receive_message(**params)
-        messages = []
-        for raw in response.get("Messages", []):
+        raw_messages = response.get("Messages", [])
+        messages = MessageBatch(received_count=len(raw_messages))
+        for raw in raw_messages:
+            try:
+                envelope = Envelope.model_validate_json(raw["Body"])
+            except ValidationError:
+                # Leave poison messages unacknowledged for the queue's redrive
+                # policy, but do not block valid messages in this response. The
+                # validation exception includes input data: never log it.
+                log.warning(
+                    "queue.invalid_message",
+                    queue=self.name,
+                    message_id=raw["MessageId"],
+                )
+                continue
             messages.append(
                 Message(
                     receipt_handle=raw["ReceiptHandle"],
                     message_id=raw["MessageId"],
-                    envelope=Envelope.model_validate_json(raw["Body"]),
+                    envelope=envelope,
                     receive_count=int(raw.get("Attributes", {}).get("ApproximateReceiveCount", 1)),
                 )
             )
@@ -134,15 +163,6 @@ class SqsQueue:
         self._called("delete_message")
         self._client.delete_message(QueueUrl=self.queue_url, ReceiptHandle=receipt_handle)
 
-    def delete_batch(self, receipt_handles: list[str]) -> None:
-        for start in range(0, len(receipt_handles), BATCH):
-            chunk = receipt_handles[start : start + BATCH]
-            self._called("delete_message_batch")
-            self._client.delete_message_batch(
-                QueueUrl=self.queue_url,
-                Entries=[{"Id": str(i), "ReceiptHandle": rh} for i, rh in enumerate(chunk)],
-            )
-
     def depth(self) -> dict[str, int]:
         self._called("get_queue_attributes")
         attrs = self._client.get_queue_attributes(
@@ -154,9 +174,6 @@ class SqsQueue:
             ],
         )["Attributes"]
         return {k: int(v) for k, v in attrs.items()}
-
-    def purge(self) -> None:
-        self._client.purge_queue(QueueUrl=self.queue_url)
 
 
 def _attributes(envelope: Envelope) -> dict[str, Any]:
@@ -201,7 +218,7 @@ def ensure_queues(
 
 
 def redrive_policy(queue: SqsQueue) -> dict[str, Any] | None:
-    attrs = queue._client.get_queue_attributes(
+    attrs = queue.client.get_queue_attributes(
         QueueUrl=queue.queue_url, AttributeNames=["RedrivePolicy"]
     )["Attributes"]
     raw = attrs.get("RedrivePolicy")
@@ -213,7 +230,7 @@ def drain(queue: SqsQueue, *, visibility: int = 30, limit: int | None = None) ->
     seen = 0
     while limit is None or seen < limit:
         batch = queue.receive(max_messages=BATCH, wait_seconds=1, visibility=visibility)
-        if not batch:
+        if getattr(batch, "received_count", len(batch)) == 0:
             return
         for message in batch:
             yield message
