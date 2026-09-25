@@ -45,9 +45,9 @@ jobs:
           --health-retries 40
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: astral-sh/setup-uv@v6
         with:
-          version: "0.5.4"
+          version: "0.11.7"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -80,9 +80,9 @@ jobs:
         with:
           terraform_version: "1.5.7"
           terraform_wrapper: false
-      - uses: astral-sh/setup-uv@v3
+      - uses: astral-sh/setup-uv@v6
         with:
-          version: "0.5.4"
+          version: "0.11.7"
       - run: terraform -chdir=terraform fmt -check -recursive
       - run: terraform -chdir=terraform init -input=false
       - run: terraform -chdir=terraform validate
