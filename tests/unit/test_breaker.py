@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import random
+
 import pytest
 from conduit.core.breaker import BreakerState, CircuitBreaker
 
@@ -54,6 +56,49 @@ def test_a_failed_probe_opens_for_another_window():
     assert cb.state is BreakerState.OPEN
     assert cb.remaining() == 10.0
     assert cb.opens == 2
+
+
+def test_an_abandoned_probe_lets_the_next_delivery_probe():
+    cb, clock = breaker(threshold=1, recovery=10.0)
+    cb.record_failure()
+    clock.advance(10)
+    assert cb.allow() and cb.probing
+    assert cb.allow() is False
+    cb.abandon_probe()
+    assert cb.state is BreakerState.HALF_OPEN and not cb.probing
+    assert cb.allow() is True
+
+
+def test_any_outcome_sequence_leaves_the_breaker_able_to_settle():
+    """Random walk over the transitions: closed always admits, open never does, and a
+    half-open breaker admits exactly one probe whenever none is in flight."""
+    rng = random.Random(7)
+    cb, clock = breaker(threshold=3, recovery=10.0)
+    seen = set()
+    for _ in range(5000):
+        step = rng.choice(["success", "failure", "abandon", "advance", "allow"])
+        if step == "success":
+            cb.record_success()
+        elif step == "failure":
+            cb.record_failure()
+        elif step == "abandon":
+            cb.abandon_probe()
+        elif step == "advance":
+            clock.advance(rng.choice([1.0, 5.0, 10.0]))
+        else:
+            cb.allow()
+        state = cb.state
+        seen.add((state, cb.probing))
+        if state is BreakerState.CLOSED:
+            assert cb.allow() and not cb.probing
+        elif state is BreakerState.OPEN:
+            assert not cb.allow() and not cb.probing
+        elif cb.probing:
+            assert cb.allow() is False
+        else:
+            assert cb.allow() is True and cb.probing
+            cb.abandon_probe()
+    assert (BreakerState.HALF_OPEN, True) in seen and (BreakerState.OPEN, False) in seen
 
 
 def test_settings_are_validated():

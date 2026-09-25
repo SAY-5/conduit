@@ -242,12 +242,6 @@ class Worker:
         if note is not None:
             return self._quarantine(message, note, logger)
 
-        if not self.breaker.allow():
-            hold = int(self.breaker.remaining()) + 1
-            self.queue.extend_visibility(message.receipt_handle, hold)
-            logger.info("delivery.breaker_open", hold=hold)
-            return None
-
         claim = self.store.claim(key, connector=name, task_id=task.id)
         if not claim.acquired:
             if claim.duplicate:
@@ -265,6 +259,19 @@ class Worker:
                 )
             self.queue.extend_visibility(message.receipt_handle, IN_PROGRESS_RECHECK_SECONDS)
             logger.info("delivery.in_progress_elsewhere", recheck=IN_PROGRESS_RECHECK_SECONDS)
+            return None
+
+        # The claim comes first so a duplicate or a key held elsewhere never spends
+        # the half-open probe; only a delivery attempt may take it. A message the
+        # breaker turns away is held for at least the queue's visibility timeout
+        # so it cannot cycle through receives while the target is down.
+        if not self.breaker.allow():
+            self.store.release(key)
+            hold = max(
+                self.spec.queue.visibility_timeout_seconds, int(self.breaker.remaining()) + 1
+            )
+            self.queue.extend_visibility(message.receipt_handle, hold)
+            logger.info("delivery.breaker_open", hold=hold)
             return None
 
         remote_id = self.store.latest(name, task.id) if task.version > 1 else None
@@ -319,6 +326,11 @@ class Worker:
                 attempts=message.receive_count,
                 detail=str(err),
             )
+        finally:
+            # A probe whose retries exhausted on 429 reached no verdict about the
+            # target; hand it back so the breaker does not stay half open behind a
+            # probe nothing will ever release.
+            self.breaker.abandon_probe()
 
         elapsed = self._clock() - started
         self._note_target_ok(logger)

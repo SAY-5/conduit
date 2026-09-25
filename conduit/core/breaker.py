@@ -5,7 +5,8 @@ connection errors; not 429, which is rate limiting) open the breaker. While it i
 open the worker neither polls nor delivers, so queued messages keep their receive
 count and are never dead-lettered because of an outage. After ``recovery_seconds``
 one message is let through as a probe: success closes the breaker, failure opens
-it again for another recovery window.
+it again for another recovery window, and a probe that ends without a verdict is
+handed back so the next delivery can probe instead.
 """
 
 from __future__ import annotations
@@ -65,6 +66,21 @@ class CircuitBreaker:
             return False
         self._probing = True
         return True
+
+    @property
+    def probing(self) -> bool:
+        """Whether a half-open probe is in flight."""
+        return self._probing
+
+    def abandon_probe(self) -> None:
+        """Hand back a probe that ended without a verdict.
+
+        A delivery that took the probe but reached neither ``record_success``
+        nor ``record_failure`` (the message was a duplicate, another worker held
+        the claim, or the retries exhausted on 429) has said nothing about the
+        target, so the next delivery must be able to probe.
+        """
+        self._probing = False
 
     def record_success(self) -> bool:
         """Reset; returns True when this closed a half-open breaker."""
