@@ -89,7 +89,15 @@ def test_an_abandoned_claim_is_taken_over_after_its_lease(rig_factory, store, aw
     key = idempotency_key(rig.spec.name, "AB-1", 1)
     assert dying.claim(key, connector=rig.spec.name, task_id="AB-1").acquired
     rig.submit(task("AB-1"))
-    time.sleep(2.2)
+    item = aws["dynamodb"].get_item(
+        TableName=store.table_name, Key={"pk": {"S": key}}, ConsistentRead=True
+    )["Item"]
+    lease_until = int(item["lease_until"]["N"])
+    # Claims use integer seconds and a strict lease_until < now condition. A
+    # 2.2-second sleep can still leave now equal to the two-second lease deadline.
+    assert wait_until(lambda: int(time.time()) > lease_until, timeout=5), (
+        "abandoned claim's stored lease did not expire within five seconds"
+    )
 
     stats = rig.worker.run(max_messages=1, wait_seconds=2)
     assert stats.delivered == 1 and stats.deduplicated == 0
