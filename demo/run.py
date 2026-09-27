@@ -230,6 +230,16 @@ def main() -> int:
     for client in fakes.values():
         client.delete("/_inbox")
         client.delete("/_faults")
+    # Quarantined messages are never acknowledged, so an earlier run's payloads would still be
+    # on the queue when `conduit ops summary` reads its depth. Clear them, as the fakes' inboxes
+    # are cleared, so the summary's count and the ops table's `quar` column describe one run.
+    stale = 0
+    for queue in quarantines.values():
+        for message in list_quarantined(queue):
+            queue.delete(message.receipt_handle)
+            stale += 1
+    if stale:
+        say(f"cleared {stale} quarantined message(s) held from an earlier run")
     before = {name: scrape(name) for name in specs}
 
     # Synthetic tasks: 80 unique per connector, 20 resubmits per connector, interleaved.
