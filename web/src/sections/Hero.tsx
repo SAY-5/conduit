@@ -2,7 +2,7 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Chip, Counter, TYPE_TONE } from "../components/common";
 import { LogStream } from "../components/LogStream";
-import { Engine, SCENARIO_MESSAGES } from "../sim/engine";
+import { DUPLICATES_TOTAL, Engine, JIRA_429_ATTEMPTS, JIRA_RATE_LIMITED_TASKS, MALFORMED_TOTAL, SCENARIO_MESSAGES, UNIQUE_TOTAL, WEBHOOK_HARD_FAIL_TASKS } from "../sim/engine";
 import type { QueueMessage } from "../sim/queue";
 import { useScenario, type ScenarioPhase } from "../sim/useScenario";
 import { CONNECTOR_YAML, NEW_CONNECTOR_YAML } from "../sim/specs";
@@ -178,13 +178,13 @@ export function Hero() {
               <div className="source-card">
                 <span className="code-label">submit</span>
                 <strong className="mono">{submitted}</strong>
-                <span className="source-sub">240 unique + 60 resubmits + 2 malformed</span>
+                <span className="source-sub">{UNIQUE_TOTAL} unique + {DUPLICATES_TOTAL} resubmits + {MALFORMED_TOTAL} malformed</span>
               </div>
               <div className="source-card source-faults">
                 <span className="code-label">faults</span>
-                <span className={`fault ${phase === "done" || phase === "replaying" || phase === "idle" ? "fault-off" : ""}`}>jira 429 x2 for 30 tasks</span>
-                <span className={`fault ${phase === "done" || phase === "replaying" || phase === "idle" ? "fault-off" : ""}`}>webhook 400 for 10 tasks</span>
-                <span className="fault fault-quarantine">2 payloads their schema rejects</span>
+                <span className={`fault ${phase === "done" || phase === "replaying" || phase === "idle" ? "fault-off" : ""}`}>jira 429 x{JIRA_429_ATTEMPTS} for {JIRA_RATE_LIMITED_TASKS} tasks</span>
+                <span className={`fault ${phase === "done" || phase === "replaying" || phase === "idle" ? "fault-off" : ""}`}>webhook 400 for {WEBHOOK_HARD_FAIL_TASKS} tasks</span>
+                <span className="fault fault-quarantine">{MALFORMED_TOTAL} payloads their schema rejects</span>
               </div>
             </div>
             <div className="board-lanes">
