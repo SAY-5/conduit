@@ -269,10 +269,13 @@ CI runs the build and simulation self-check on Node.js 22.
 
 ## make demo
 
-The demo submits 300 synthetic tasks (240 unique plus 60 duplicate resubmits, interleaved)
-across the three connectors with failure injection on: the Jira fake returns 429 for the first
-two attempts of 30 tasks and the webhook fake hard-fails 10 tasks with 400. It then clears the
-webhook fault, replays the dead letters, and plans a fourth connector. Output from a real run:
+The demo submits 302 synthetic tasks across the three connectors with failure injection on: 240
+unique, 60 duplicate resubmits interleaved with them, and two payloads their source schema
+rejects (a priority outside `schemas/jira-support/v2.yaml`'s enum and a status outside
+`schemas/webhook-crm/v1.yaml`'s), while the Jira fake returns 429 for the first two attempts of
+30 tasks and the webhook fake hard-fails 10 tasks with 400. The malformed pair is quarantined
+before any key is claimed; the hard failures dead-letter. It then clears the webhook fault,
+replays the dead letters, and plans a fourth connector. Output from a real run:
 
 ```
 conduit demo summary (run DF15F0D, LocalStack at http://localhost:4566)

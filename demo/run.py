@@ -26,7 +26,7 @@ import conduit
 import httpx
 from conduit.config import load_all
 from conduit.core.idempotency import idempotency_key
-from conduit.core.queue import SqsQueue, list_dead_letters, replay_dead_letters
+from conduit.core.queue import SqsQueue, list_dead_letters, list_quarantined, replay_dead_letters
 from conduit.models import Envelope, Task
 from conduit.ops import StatusStore, collect, render_costs, render_summary
 from conduit.worker import percentile
@@ -47,6 +47,16 @@ JIRA_RATE_LIMITED_TASKS = 30
 JIRA_429_ATTEMPTS = 2
 WEBHOOK_HARD_FAIL_TASKS = 10
 DRAIN_TIMEOUT = 300
+
+# Payloads their source schema rejects, so the run exercises the quarantine path beside the
+# dead-letter path. Only the connectors whose schema has an enum can be violated by a payload
+# the Task model itself accepts: schemas/jira-support/v2.yaml constrains priority, and
+# schemas/webhook-crm/v1.yaml constrains status. slack-ops/v1 has no such field, so it
+# submits nothing malformed and its quarantine queue stays empty.
+MALFORMED: dict[str, dict[str, str]] = {
+    "jira-support": {"priority": "cosmic"},
+    "webhook-crm": {"status": "archived"},
+}
 
 NEW_CONNECTOR_YAML = """\
 type: slack
@@ -210,6 +220,9 @@ def main() -> int:
         wait_http(f"http://localhost:{port}/metrics", timeout=240)
     queues = {name: SqsQueue.by_name(spec.queue_name, sqs) for name, spec in specs.items()}
     dlqs = {name: SqsQueue.by_name(spec.dlq_name, sqs) for name, spec in specs.items()}
+    quarantines = {
+        name: SqsQueue.by_name(spec.quarantine_name, sqs) for name, spec in specs.items()
+    }
     fakes = {
         spec.type: httpx.Client(base_url=FAKES[spec.type], timeout=10) for spec in specs.values()
     }
@@ -245,6 +258,18 @@ def main() -> int:
         f"webhook 400 for {len(hard_failed)} tasks"
     )
 
+    malformed: dict[str, Task] = {
+        name: Task(
+            id=f"{run_id}-{name}-bad-0001",
+            title=f"Malformed payload for {name}",
+            body="Rejected by the source schema before any claim.",
+            priority=recipe.get("priority", "normal"),
+            status=recipe.get("status", "open"),
+            labels=[name.split("-")[0], "demo"],
+        )
+        for name, recipe in MALFORMED.items()
+    }
+
     submitted = 0
     duplicates = 0
     submit_started = time.time()
@@ -252,7 +277,7 @@ def main() -> int:
         unique = tasks[name]
         healthy = [t for t in unique if t.id not in hard_failed]
         resubmits = rng.sample(healthy, DUPLICATES_PER_CONNECTOR)
-        batch = unique + resubmits
+        batch = unique + resubmits + ([malformed[name]] if name in malformed else [])
         rng.shuffle(batch)
         envelopes = [
             Envelope(task=t, connector=name, idempotency_key=idempotency_key(name, t.id, t.version))
@@ -262,7 +287,8 @@ def main() -> int:
         submitted += sent
         duplicates += len(resubmits)
         say(
-            f"submitted {sent} messages to {spec.queue_name} ({len(unique)} unique, {len(resubmits)} resubmits)"
+            f"submitted {sent} messages to {spec.queue_name} ({len(unique)} unique, "
+            f"{len(resubmits)} resubmits, {1 if name in malformed else 0} malformed)"
         )
 
     drain_seconds = wait_for_drain(queues, DRAIN_TIMEOUT)
@@ -293,6 +319,20 @@ def main() -> int:
         name: sorted(
             m.envelope.task.id for m in dead[name] if m.envelope.task.id.startswith(run_id)
         )
+        for name in specs
+    }
+
+    held = {name: list_quarantined(quarantines[name]) for name in specs}
+    quarantined = {
+        name: [m for m in held[name] if m.envelope.task.id.startswith(run_id)] for name in specs
+    }
+    quarantine_notes = {
+        name: [
+            f"{name}/{m.envelope.quarantine.stage}: {m.envelope.quarantine.field} "
+            f"{m.envelope.quarantine.reason}"
+            for m in quarantined[name]
+            if m.envelope.quarantine is not None
+        ]
         for name in specs
     }
 
@@ -346,6 +386,7 @@ def main() -> int:
     total_dedup = int(sum(delta[n].get("conduit_deduplicated_total", 0) for n in specs))
     total_retried = int(sum(delta[n].get("conduit_retried_total", 0) for n in specs))
     total_dead = sum(len(v) for v in dead_ids.values())
+    total_quarantined = sum(len(v) for v in quarantined.values())
     all_delays = [float(e["delay"]) for n in specs for e in retries[n]]
     all_latency = [x for n in specs for x in latencies[n]]
     all_e2e = [x for n in specs for x in end_to_end[n]]
@@ -363,7 +404,8 @@ def main() -> int:
         f"measured at commit {source['commit']}, conduit {source['version']}, "
         f"{source['localstack']}, {source['date']}",
         "=" * 72,
-        f"tasks submitted        {submitted}  ({total_unique} unique + {duplicates} duplicate resubmits)",
+        f"tasks submitted        {submitted}  ({total_unique} unique + {duplicates} duplicate "
+        f"resubmits + {len(MALFORMED)} malformed)",
         f"deduplicated           {total_dedup}  (must equal duplicates: {'ok' if total_dedup == duplicates else 'MISMATCH'})",
         "delivered per connector",
     ]
@@ -382,6 +424,10 @@ def main() -> int:
         f"{'ok' if total_dead == WEBHOOK_HARD_FAIL_TASKS else 'MISMATCH'}); "
         f"conduit-webhook-crm-dlq after maxReceiveCount={specs['webhook-crm'].queue.max_receive_count}",
         f"  dead letters         {', '.join(t.rsplit('-', 1)[-1] for t in dead_ids['webhook-crm'])}",
+        f"quarantined            {total_quarantined}  (must equal malformed payloads "
+        f"{len(MALFORMED)}: {'ok' if total_quarantined == len(MALFORMED) else 'MISMATCH'}); "
+        f"held in conduit-<connector>-quarantine, never dead-lettered",
+        f"  quarantine notes     {'; '.join(n for name in specs for n in quarantine_notes[name])}",
         f"DLQ replay             {replayed} replayed after clearing the fault; DLQ now {dlq_after_replay}; "
         f"webhook delivered {webhook_delivered_after}/{UNIQUE_PER_CONNECTOR} in {replay_seconds:.1f}s",
         f"delivery latency       p50 {percentile(all_latency, 50) * 1000:.1f} ms, p95 {percentile(all_latency, 95) * 1000:.1f} ms "
@@ -409,6 +455,8 @@ def main() -> int:
                 "replay_metrics": replay_metrics,
                 "dedup_logged": dedup_logged,
                 "dead_letters": dead_ids,
+                "quarantined": {n: [m.envelope.task.id for m in quarantined[n]] for n in specs},
+                "quarantine_notes": quarantine_notes,
                 "ops": [asdict(r) for r in ops_rows],
                 "plan": {"summary": plan_summary, "created": plan_created},
             },
@@ -422,6 +470,10 @@ def main() -> int:
         problems.append("no delivery.retry events observed: the jira 429 fault did not fire")
     if total_dedup != duplicates:
         problems.append(f"deduplicated {total_dedup} != duplicates {duplicates}")
+    if total_quarantined != len(MALFORMED):
+        problems.append(f"quarantined {total_quarantined} != malformed payloads {len(MALFORMED)}")
+    if any(m.envelope.quarantine is None for name in specs for m in quarantined[name]):
+        problems.append("a quarantined message carries no note")
     if total_dead != WEBHOOK_HARD_FAIL_TASKS:
         problems.append(f"dead letters {total_dead} != hard failures {WEBHOOK_HARD_FAIL_TASKS}")
     if dlq_after_replay != 0 or webhook_delivered_after != UNIQUE_PER_CONNECTOR:
