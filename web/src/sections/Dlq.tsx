@@ -2,6 +2,7 @@ import { motion, useReducedMotion } from "framer-motion";
 import { useCallback, useMemo, useState } from "react";
 import { Chip, Reveal, SectionHead } from "../components/common";
 import { LogStream } from "../components/LogStream";
+import { HARD_FAIL_STATUS } from "../sim/adapters";
 import { Engine } from "../sim/engine";
 import { useScenario } from "../sim/useScenario";
 import { makeTask } from "../sim/models";
@@ -88,7 +89,7 @@ export function Dlq() {
                 </div>
               </div>
               <div className="meter">
-                <span className="stat-label">fault: 400 for {COUNT} tasks</span>
+                <span className="stat-label">fault: {HARD_FAIL_STATUS} for {COUNT} tasks</span>
                 <strong className={`mono ${faultOn ? "hot" : "ok"}`}>{faultOn ? "ON" : "OFF"}</strong>
                 <span className="muted mono small">{faultOn ? "POST /_faults hard_fail_tasks" : "DELETE /_faults"}</span>
               </div>
@@ -99,7 +100,7 @@ export function Dlq() {
               <button className="btn" onClick={() => void replay()} disabled={busy || dead.length === 0}>conduit dlq replay</button>
             </div>
             <p className="dlq-hint">
-              {stage === "empty" ? `Queue ${COUNT} tasks the webhook receiver rejects with 400, plus one record whose status fails schemas/webhook-crm/v1.yaml. Each 400 is received twice (maxReceiveCount=2) and then moved to the DLQ by SQS; the malformed record goes straight to quarantine.` : null}
+              {stage === "empty" ? `Queue ${COUNT} tasks the webhook receiver rejects with ${HARD_FAIL_STATUS}, plus one record whose status fails schemas/webhook-crm/v1.yaml. Each ${HARD_FAIL_STATUS} is received twice (maxReceiveCount=2) and then moved to the DLQ by SQS; the malformed record goes straight to quarantine.` : null}
               {stage === "loaded" && faultOn ? "Replaying now would bounce every message straight back into the DLQ with replays + 1. Clear the fault first, or try it and see." : null}
               {stage === "loaded" && !faultOn ? "Fault cleared. Replay moves the dead letters back onto conduit-webhook-crm; the worker claims each key again and delivers." : null}
               {stage === "replaying" ? "Replaying: messages are back on the work queue with attempt + 1." : null}

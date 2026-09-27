@@ -22,6 +22,11 @@ export interface FaultSpec {
   fail500Once: boolean;
 }
 
+/** What fakes/common.py answers a rate-limited task with, for its first rate_limit_count calls. */
+export const RATE_LIMIT_STATUS = 429;
+/** What fakes/common.py answers a hard-failed task with, on every call. */
+export const HARD_FAIL_STATUS = 400;
+
 export interface InboxEntry {
   seq: number;
   taskId: string;
@@ -68,14 +73,14 @@ export class FakeTarget {
     const f = this.faults;
     if (f.hardFailTasks.has(taskId)) {
       this.rejected += 1;
-      return { status: 400, headers: {}, body: { error: "invalid_payload", reason: "hard_fail" } };
+      return { status: HARD_FAIL_STATUS, headers: {}, body: { error: "invalid_payload", reason: "hard_fail" } };
     }
     if (f.rateLimitTasks.has(taskId)) {
       const hits = this.rateLimitHits.get(taskId) ?? 0;
       if (hits < f.rateLimitCount) {
         this.rateLimitHits.set(taskId, hits + 1);
         this.rejected += 1;
-        return { status: 429, headers: { "Retry-After": "0" }, body: { error: "ratelimited", reason: "rate_limited" } };
+        return { status: RATE_LIMIT_STATUS, headers: { "Retry-After": "0" }, body: { error: "ratelimited", reason: "rate_limited" } };
       }
     }
     if (f.fail500Once && !this.fired500.has(taskId)) {

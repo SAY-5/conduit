@@ -1,7 +1,7 @@
 // The browser stand-in for deploy/docker-compose.yml + demo/run.py: LocalStack
 // queues, one worker per connector, three fakes, and the scenario the README reports.
 
-import { buildAdapter, FakeTarget, type Adapter } from "./adapters";
+import { buildAdapter, FakeTarget, RATE_LIMIT_STATUS, type Adapter } from "./adapters";
 import { idempotencyKey, IdempotencyStore } from "./idempotency";
 import { makeTask, type Envelope, type Task } from "./models";
 import { Clock, Rng } from "./prng";
@@ -350,7 +350,7 @@ export function formatSummary(s: Summary, planLines: string[], planSummary: stri
     `${pad("deduplicated")}${s.deduplicated}  (must equal duplicates: ${s.deduplicated === s.duplicates ? "ok" : "MISMATCH"})`,
     "delivered per connector",
     ...Object.keys(s.delivered).map((n) => `  ${n.padEnd(18)}${String(s.delivered[n]).padStart(3)} delivered, ${String(s.uniqueKeys[n]).padStart(3)} unique keys, ${String(s.dedupPer[n]).padStart(3)} deduplicated (${inboxes[n] ?? "fake inbox"})`),
-    `${pad("retried")}${s.retried}  (jira fake returned 429 ${s.rejected429} times for ${s.rateLimitedTasks} tasks)`,
+    `${pad("retried")}${s.retried}  (jira fake returned ${RATE_LIMIT_STATUS} ${s.rejected429} times for ${s.rateLimitedTasks} tasks)`,
     `${pad("  backoff evidence")}attempt 1 -> ${s.byAttempt[1] ?? 0} retries, attempt 2 -> ${s.byAttempt[2] ?? 0} retries; delay min/median/max ${s.delayMin.toFixed(3)}s / ${s.delayMedian.toFixed(3)}s / ${s.delayMax.toFixed(3)}s (policy base 0.25s x2, cap 8s, full jitter)`,
     `${pad("dead-lettered")}${s.deadLettered}  (must equal hard failures ${WEBHOOK_HARD_FAIL_TASKS}: ${s.deadLettered === WEBHOOK_HARD_FAIL_TASKS ? "ok" : "MISMATCH"}); conduit-webhook-crm-dlq after maxReceiveCount=2`,
     `${pad("  dead letters")}${s.deadLetterIds.map((t) => t.slice(-4)).join(", ")}`,

@@ -2,6 +2,7 @@
 // unit assertions on the pieces those numbers depend on.
 // Run with `npm run selfcheck` (Node 20+, Web Crypto via globalThis.crypto).
 
+import { RATE_LIMIT_STATUS } from "./adapters";
 import { Engine, JIRA_429_ATTEMPTS, JIRA_RATE_LIMITED_TASKS, runScenario, summarize, UNIQUE_PER_CONNECTOR, WEBHOOK_HARD_FAIL_TASKS, type PhaseOne, type ScenarioSetup, type Summary } from "./engine";
 import { idempotencyKey, IdempotencyStore, keyMaterial } from "./idempotency";
 import { makeTask } from "./models";
@@ -64,12 +65,12 @@ async function scenarioLines(finished?: FinishedRun): Promise<CheckLine[]> {
     })),
     { label: "  jira delivered", value: `${s.delivered["jira-support"]} of ${UNIQUE_PER_CONNECTOR}`, ok: s.delivered["jira-support"] === UNIQUE_PER_CONNECTOR },
     { label: "  slack delivered", value: `${s.delivered["slack-ops"]} of ${UNIQUE_PER_CONNECTOR}`, ok: s.delivered["slack-ops"] === UNIQUE_PER_CONNECTOR },
-    { label: "retried", value: `${s.retried}  (jira fake returned 429 ${s.rejected429} times for ${s.rateLimitedTasks} tasks)`, ok: s.retried === 60 },
-    { label: "  429 responses", value: `${s.rejected429} = ${JIRA_RATE_LIMITED_TASKS} tasks x ${JIRA_429_ATTEMPTS} attempts`, ok: s.rejected429 === JIRA_RATE_LIMITED_TASKS * JIRA_429_ATTEMPTS },
+    { label: "retried", value: `${s.retried}  (jira fake returned ${RATE_LIMIT_STATUS} ${s.rejected429} times for ${s.rateLimitedTasks} tasks)`, ok: s.retried === 60 },
+    { label: `  ${RATE_LIMIT_STATUS} responses`, value: `${s.rejected429} = ${JIRA_RATE_LIMITED_TASKS} tasks x ${JIRA_429_ATTEMPTS} attempts`, ok: s.rejected429 === JIRA_RATE_LIMITED_TASKS * JIRA_429_ATTEMPTS },
     { label: "  rate-limited tasks", value: `${s.rateLimitedTasks}`, ok: s.rateLimitedTasks === JIRA_RATE_LIMITED_TASKS },
     { label: "  backoff evidence", value: `attempt 1 -> ${s.byAttempt[1] ?? 0}, attempt 2 -> ${s.byAttempt[2] ?? 0}; delay min/median/max ${s.delayMin.toFixed(3)}s / ${s.delayMedian.toFixed(3)}s / ${s.delayMax.toFixed(3)}s`, ok: s.byAttempt[1] === 30 && s.byAttempt[2] === 30 },
     { label: "  jitter within cap", value: `every delay in [0, ${backoffCeiling(2, jira.spec.retry).toFixed(3)}s]`, ok: s.delayMin >= 0 && s.delayMax <= backoffCeiling(2, jira.spec.retry) },
-    { label: "  Retry-After honoured", value: `${honored} 429 responses fed back into the token bucket`, ok: honored === JIRA_RATE_LIMITED_TASKS * JIRA_429_ATTEMPTS },
+    { label: "  Retry-After honoured", value: `${honored} ${RATE_LIMIT_STATUS} responses fed back into the token bucket`, ok: honored === JIRA_RATE_LIMITED_TASKS * JIRA_429_ATTEMPTS },
     { label: "  token bucket waits", value: `${throttled} sends paced by the per-connector bucket; the shipped bursts (${bursts}) cover this run's pace, so only Retry-After moves the earliest send`, ok: throttled === 0 },
     { label: "  breakers", value: `0 opens (429 is throttling, not a target failure)`, ok: Object.values(engine.connectors).every((rt) => rt.worker.stats.breakerOpens === 0) },
     { label: "quarantined", value: `${s.quarantined}  (must equal malformed payloads ${s.malformed}: ${s.quarantined === s.malformed ? "ok" : "MISMATCH"}); ${s.quarantineNotes.join("; ")}`, ok: s.quarantined === s.malformed && s.quarantineNotes.length === s.malformed && s.quarantineNotes.every((n) => n.includes("schema")) },

@@ -2,6 +2,7 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useCallback, useMemo, useState } from "react";
 import { Chip, Reveal, SectionHead } from "../components/common";
 import { LogStream } from "../components/LogStream";
+import { HARD_FAIL_STATUS, RATE_LIMIT_STATUS } from "../sim/adapters";
 import { Engine } from "../sim/engine";
 import type { StoreEvent, StoreItem } from "../sim/idempotency";
 import { makeTask } from "../sim/models";
@@ -145,7 +146,7 @@ function BackoffLab() {
   const maxCeiling = Math.max(...Array.from({ length: policy.maxAttempts - 1 }, (_, i) => backoffCeiling(i + 1, policy)));
   const last = attempts[attempts.length - 1];
   const outcome = busy
-    ? `delivering with ${count} injected 429 response${count > 1 ? "s" : ""}`
+    ? `delivering with ${count} injected ${RATE_LIMIT_STATUS} response${count > 1 ? "s" : ""}`
     : last
       ? last.outcome === "ok"
         ? `delivered on attempt ${last.attempt} after ${attempts.length - 1} retries`
@@ -156,13 +157,13 @@ function BackoffLab() {
     <div className="lab glass">
       <div className="lab-head">
         <span className="eyebrow">transient failures</span>
-        <h3>Inject a 429 burst and watch full-jitter backoff.</h3>
-        <p>jira-support retries up to <code>max_attempts={policy.maxAttempts}</code> inside one SQS receive: delay = uniform(0, min({policy.maxSeconds}s, {policy.baseSeconds}s × 2^(attempt-1))). Each sleep first extends the message's visibility so it cannot be redelivered mid-retry. With {policy.maxAttempts} attempts, {policy.maxAttempts - 1} consecutive 429s still deliver; {policy.maxAttempts} exhaust the budget and the message goes back to the queue for redrive.</p>
+        <h3>Inject a {RATE_LIMIT_STATUS} burst and watch full-jitter backoff.</h3>
+        <p>jira-support retries up to <code>max_attempts={policy.maxAttempts}</code> inside one SQS receive: delay = uniform(0, min({policy.maxSeconds}s, {policy.baseSeconds}s × 2^(attempt-1))). Each sleep first extends the message's visibility so it cannot be redelivered mid-retry. With {policy.maxAttempts} attempts, {policy.maxAttempts - 1} consecutive {RATE_LIMIT_STATUS}s still deliver; {policy.maxAttempts} exhaust the budget and the message goes back to the queue for redrive.</p>
       </div>
       <div className="lab-actions">
-        <div className="seg" role="group" aria-label="How many 429 responses">
+        <div className="seg" role="group" aria-label={`How many ${RATE_LIMIT_STATUS} responses`}>
           {[1, 2, 3, 4].map((n) => (
-            <button key={n} aria-pressed={n === count} onClick={() => setCount(n)} disabled={busy}>{n} × 429</button>
+            <button key={n} aria-pressed={n === count} onClick={() => setCount(n)} disabled={busy}>{n} × {RATE_LIMIT_STATUS}</button>
           ))}
         </div>
         <button className="btn btn-warn" onClick={() => void run()} disabled={busy}>Inject and deliver</button>
@@ -214,7 +215,7 @@ function HardFailLab() {
       engine.clock.advance(0.1);
       const t = traces[0];
       if (t) {
-        setSteps((s) => [...s, { receive: t.message.receiveCount, kind: t.willDeadLetter ? "dlq" : "fail", label: `receive #${t.message.receiveCount}: claim → POST → HTTP 400 → PermanentError → release claim → visibility 0${t.willDeadLetter ? " → receive count reached maxReceiveCount" : ""}` }]);
+        setSteps((s) => [...s, { receive: t.message.receiveCount, kind: t.willDeadLetter ? "dlq" : "fail", label: `receive #${t.message.receiveCount}: claim → POST → HTTP ${HARD_FAIL_STATUS} → PermanentError → release claim → visibility 0${t.willDeadLetter ? " → receive count reached maxReceiveCount" : ""}` }]);
       } else {
         setSteps((s) => [...s, { receive: max + 1, kind: "moved", label: `receive #${max + 1} would exceed maxReceiveCount=${max}: SQS moves the message to ${rt.dlq.name}` }]);
       }
@@ -231,11 +232,11 @@ function HardFailLab() {
     <div className="lab glass">
       <div className="lab-head">
         <span className="eyebrow">permanent failures</span>
-        <h3>Inject a hard 400 and watch the message bounce into the DLQ.</h3>
+        <h3>Inject a hard {HARD_FAIL_STATUS} and watch the message bounce into the DLQ.</h3>
         <p>A 4xx outside the retry list is a <code>PermanentError</code>: no in-process retry. The worker releases the claim and sets visibility to 0 so SQS redelivers immediately. webhook-crm sets <code>max_receive_count: {max}</code>, so after {max} failed receives the queue itself moves the message to <code>{rt.dlq.name}</code>.</p>
       </div>
       <div className="lab-actions">
-        <button className="btn btn-danger" onClick={() => void run()} disabled={busy}>Inject 400 and deliver</button>
+        <button className="btn btn-danger" onClick={() => void run()} disabled={busy}>Inject {HARD_FAIL_STATUS} and deliver</button>
       </div>
       <div className="bounce-board">
         <div className={`bounce-queue ${inQueue ? "bounce-on" : ""}`}>
