@@ -252,7 +252,7 @@ show up in `conduit_queue_depth`.
 
 ```
 make setup          # uv sync
-make test-unit      # 168 tests, no Docker
+make test-unit      # 185 tests, no Docker
 make up             # LocalStack + fakes + one worker per connector
 make tf-apply       # terraform apply against LocalStack (26 resources)
 make test           # unit + LocalStack integration + terraform plan tests
@@ -339,7 +339,9 @@ refreshes three queue depths at most every 10 seconds, and a longer-lived contai
 reports more requests for the same 80 deliveries. The end-to-end p95 is dominated by the Jira
 connector's 10 requests/s rate limit plus its retries; per-attempt delivery latency is the
 worker's own measurement, and both move with how loaded the host is, so a rerun prints its own
-numbers rather than these.
+numbers rather than these. The `per min` throughput column and the `delay min/median/max` line
+are run-specific for the same reason: the first is deliveries divided by the wall-clock time the
+run took, and the second reports the full-jitter delays this run happened to draw.
 
 ## Browser demo
 
@@ -348,7 +350,7 @@ idempotency store, queue, retry policy, token bucket, and Terraform resource set
 driven by a seeded PRNG and a virtual clock. `npm run selfcheck` in `web/` reproduces the
 figures above (60 deduplicated, 10 dead-lettered then replayed to 0, 8 resources planned for
 a fourth connector YAML, 26 for the shipped three) and checks that a malformed payload is
-quarantined rather than dead-lettered, as 48 assertions in Node. The three connector YAMLs and
+quarantined rather than dead-lettered, as 49 assertions in Node. The three connector YAMLs and
 the source schemas are embedded into the page from `connectors/` and `schemas/` by
 `npm run embed`, and CI runs `npm run embed:check` so the page cannot drift from the files it
 claims to show. See [web/README.md](web/README.md).
@@ -412,7 +414,7 @@ tests/              unit (respx, moto), integration (LocalStack), terraform (pla
   enqueueing.
 * The browser demo plans the per-connector quarantine queue: 8 resources for a new connector
   and 26 for the shipped base stack, as the real plan does. Its DLQ lab sends a malformed
-  payload to quarantine, and the self-check runs 48 assertions.
+  payload to quarantine, and the self-check runs 49 assertions.
 * ARCHITECTURE.md and CONTRIBUTING.md quote the current plan counts.
 
 ### v5.0.0
