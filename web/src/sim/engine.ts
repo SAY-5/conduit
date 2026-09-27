@@ -7,7 +7,7 @@ import { makeTask, type Envelope, type Task } from "./models";
 import { Clock, Rng } from "./prng";
 import { listDeadLetters, Queue, replayDeadLetters, type QueueMessage } from "./queue";
 import { SCHEMAS } from "./schema";
-import { CONNECTOR_NAMES, dlqName, loadAll, quarantineName, queueName, type ConnectorSpec } from "./specs";
+import { CONNECTOR_NAMES, dlqName, loadAll, NEW_CONNECTOR_LINES, quarantineName, queueName, type ConnectorSpec } from "./specs";
 import { percentile, Worker, type HandleTrace, type LogEvent } from "./worker";
 
 export const UNIQUE_PER_CONNECTOR = 80;
@@ -359,7 +359,7 @@ export function formatSummary(s: Summary, planLines: string[], planSummary: stri
     `${pad("DLQ replay")}${s.replayed} replayed after clearing the fault; DLQ now ${s.dlqAfterReplay}; webhook delivered ${s.webhookDeliveredAfter}/${UNIQUE_PER_CONNECTOR}`,
     `${pad("delivery latency")}p50 ${s.p50Ms.toFixed(1)} ms, p95 ${s.p95Ms.toFixed(1)} ms (worker attempt-to-ack)`,
     `${pad("end-to-end latency")}p50 ${s.e2eP50.toFixed(2)} s, p95 ${s.e2eP95.toFixed(2)} s (submit-to-remote-receipt); queues drained in ${s.drainSeconds.toFixed(1)}s`,
-    "new integration from one file (connectors/pager-oncall.yaml, 10 lines):",
+    `new integration from one file (connectors/pager-oncall.yaml, ${NEW_CONNECTOR_LINES} lines):`,
     `  ${planSummary}`,
     ...planLines.map((a) => `  + ${a}`),
     "=".repeat(72),

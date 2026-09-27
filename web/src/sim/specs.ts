@@ -120,6 +120,15 @@ queue:
   max_receive_count: 4
 `;
 
+/**
+ * How long the file is. The panel prints the YAML with a filename comment on top that the file
+ * demo/run.py writes does not carry, so the comment is left out and both surfaces report the
+ * same count for the same file.
+ */
+export const NEW_CONNECTOR_LINES = NEW_CONNECTOR_YAML.trimEnd()
+  .split("\n")
+  .filter((line) => !line.startsWith("#")).length;
+
 // A small YAML subset: nested maps by two-space indentation, scalars, inline
 // lists of scalars, comments.
 export type YamlValue = YamlScalar | YamlScalar[] | YamlMap;
