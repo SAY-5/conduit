@@ -1,14 +1,15 @@
 // Port of conduit/core/schema.py: the source contract a payload must meet before delivery.
 // A payload that fails it is moved to the connector's quarantine queue, never the DLQ.
+// The shipped schemas are parsed from schemas/<connector>/v<N>.yaml, embedded byte for
+// byte in config.generated.ts.
 
 import { taskField, type QuarantineNote, type Task } from "./models";
-
-export type FieldType = "string" | "integer" | "number" | "boolean" | "list" | "any";
+import { ConfigError, FIELD_TYPES, parseYaml, SCHEMA_YAML, type FieldType, type YamlScalar } from "./specs";
 
 export interface SchemaField {
   type: FieldType;
   required?: boolean;
-  enum?: unknown[];
+  enum?: YamlScalar[];
   maxLength?: number;
 }
 
@@ -18,27 +19,36 @@ export interface SourceSchema {
   fields: Record<string, SchemaField>;
 }
 
-const ID: SchemaField = { type: "string", required: true, maxLength: 256 };
-const TITLE: SchemaField = { type: "string", required: true };
+/** Parse one schemas/<connector>/v<N>.yaml. */
+export function loadSchema(connector: string, version: number, text: string): SourceSchema {
+  const raw = parseYaml(text);
+  const fields = raw.fields;
+  if (!fields || typeof fields !== "object" || Array.isArray(fields)) {
+    throw new ConfigError(`${connector}/v${version}: fields must be a mapping`);
+  }
+  const out: Record<string, SchemaField> = {};
+  for (const [path, rule] of Object.entries(fields)) {
+    if (!rule || typeof rule !== "object" || Array.isArray(rule)) throw new ConfigError(`${connector}/v${version}: ${path} must be a rule`);
+    const type = rule.type;
+    if (typeof type !== "string" || !FIELD_TYPES.includes(type as FieldType)) {
+      throw new ConfigError(`${connector}/v${version}: ${path}.type must be one of ${FIELD_TYPES.join(", ")}`);
+    }
+    const field: SchemaField = { type: type as FieldType };
+    if (rule.required !== undefined) field.required = rule.required === true;
+    if (Array.isArray(rule.enum) && rule.enum.length) field.enum = rule.enum;
+    if (typeof rule.max_length === "number") field.maxLength = rule.max_length;
+    out[path] = field;
+  }
+  return { connector, version, fields: out };
+}
 
 /** The latest shipped version per connector, as in schemas/<connector>/v<N>.yaml. */
-export const SCHEMAS: Record<string, SourceSchema> = {
-  "jira-support": {
-    connector: "jira-support",
-    version: 2,
-    fields: { id: ID, title: TITLE, priority: { type: "string", enum: ["low", "normal", "high", "urgent"] }, "fields.region": { type: "string" }, "fields.reporter": { type: "string" } },
-  },
-  "slack-ops": {
-    connector: "slack-ops",
-    version: 1,
-    fields: { id: ID, title: TITLE, body: { type: "string" }, labels: { type: "list" } },
-  },
-  "webhook-crm": {
-    connector: "webhook-crm",
-    version: 1,
-    fields: { id: ID, title: TITLE, version: { type: "integer", required: true }, status: { type: "string", enum: ["open", "in_progress", "blocked", "done", "closed"] } },
-  },
-};
+export const SCHEMAS: Record<string, SourceSchema> = Object.fromEntries(
+  Object.entries(SCHEMA_YAML).map(([name, versions]) => {
+    const latest = Math.max(...Object.keys(versions).map(Number));
+    return [name, loadSchema(name, latest, versions[latest])];
+  }),
+);
 
 function matches(value: unknown, type: FieldType): boolean {
   if (type === "any") return true;
@@ -52,7 +62,7 @@ function matches(value: unknown, type: FieldType): boolean {
 function violation(rule: SchemaField, value: unknown): { reason: string; detail: string } | null {
   if (value === null) return rule.required ? { reason: "missing", detail: "required source field is absent" } : null;
   if (!matches(value, rule.type)) return { reason: "type", detail: `expected ${rule.type}, got ${Array.isArray(value) ? "list" : typeof value}` };
-  if (rule.enum && !rule.enum.includes(value)) return { reason: "enum", detail: `${JSON.stringify(value)} is not one of ${JSON.stringify(rule.enum)}` };
+  if (rule.enum && !rule.enum.includes(value as YamlScalar)) return { reason: "enum", detail: `${JSON.stringify(value)} is not one of ${JSON.stringify(rule.enum)}` };
   const sized = typeof value === "string" || Array.isArray(value);
   if (rule.maxLength !== undefined && sized && value.length > rule.maxLength) return { reason: "too_long", detail: `length ${value.length} exceeds ${rule.maxLength}` };
   return null;

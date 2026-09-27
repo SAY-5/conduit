@@ -4,19 +4,14 @@ import { buildAdapter, FakeTarget, type RenderedRequest } from "../sim/adapters"
 import { idempotencyKey, keyMaterial } from "../sim/idempotency";
 import { makeTask } from "../sim/models";
 import { Rng } from "../sim/prng";
-import { CONNECTOR_NAMES, CONNECTOR_YAML, dlqName, loadAll, quarantineName, queueName } from "../sim/specs";
+import { pythonClass } from "../sim/source";
+import { CONNECTOR_NAMES, CONNECTOR_YAML, describeRule, dlqName, loadAll, quarantineName, queueName, SOURCE_PY } from "../sim/specs";
 import "./interface.css";
 
-const ADAPTER_PY = `class Adapter(abc.ABC):
-    """Deliver one task revision to a remote system, idempotently."""
-
-    def deliver(self, task: Task, idempotency_key: str,
-                remote_id: str | None = None) -> DeliveryResult: ...
-
-    def healthcheck(self) -> bool: ...
-
-    # raises TransientError (429, 5xx, timeout) or PermanentError (other 4xx)
-    # never sleeps, never loops, never touches the queue`;
+// The Adapter class, sliced out of the embedded copy of conduit/adapters/base.py, so the
+// block on the page is the shipped file rather than a paraphrase of it.
+const ADAPTER_PY = pythonClass(SOURCE_PY["conduit/adapters/base.py"], "Adapter");
+const ADAPTER_PY_LABEL = `conduit/adapters/base.py, class Adapter`;
 
 const SPECS = loadAll();
 
@@ -62,7 +57,7 @@ export function Interface() {
               ))}
             </div>
             <Code lang="yaml" label={`connectors/${name}.yaml`} text={CONNECTOR_YAML[name].trim()} />
-            <Code lang="py" label="conduit/adapters/base.py" text={ADAPTER_PY} />
+            <Code lang="py" label={ADAPTER_PY_LABEL} text={ADAPTER_PY} />
           </div>
 
           <div className="iface-right">
@@ -83,16 +78,17 @@ export function Interface() {
                 </div>
                 <div>
                   <dt>mapping</dt>
-                  <dd className="mono">{Object.entries(spec.mapping).map(([r, s]) => <span key={r} className="kv"><b>{r}</b> ← {s}</span>)}</dd>
+                  <dd className="mono">{Object.entries(spec.mapping).map(([r, rule]) => <span key={r} className="kv"><b>{r}</b> ← {describeRule(rule)}</span>)}</dd>
                 </div>
                 <div>
                   <dt>retry</dt>
                   <dd className="mono">max_attempts {spec.retry.maxAttempts} · base {spec.retry.baseSeconds}s · cap {spec.retry.maxSeconds}s · x{spec.retry.multiplier} full jitter · retry on {spec.retry.retryOnStatus.join(" ")} and 5xx</dd>
                 </div>
-                <div><dt>rate_limit</dt><dd className="mono">{spec.rateLimit.requestsPerSecond} requests/s</dd></div>
+                <div><dt>rate_limit</dt><dd className="mono">{spec.rateLimit.requestsPerSecond} requests/s · burst {spec.rateLimit.burst} · Retry-After honoured up to {spec.rateLimit.maxRetryAfterSeconds}s</dd></div>
+                <div><dt>breaker</dt><dd className="mono">opens after {spec.breaker.failureThreshold} consecutive target failures · probes again after {spec.breaker.recoverySeconds}s</dd></div>
                 <div>
                   <dt>queue</dt>
-                  <dd className="mono">{queueName(spec)} → {dlqName(spec)} after <b>maxReceiveCount={spec.queue.maxReceiveCount}</b> · schema failures → {quarantineName(spec)} · visibility {spec.queue.visibilityTimeoutSeconds}s</dd>
+                  <dd className="mono">{queueName(spec)} → {dlqName(spec)} after <b>maxReceiveCount={spec.queue.maxReceiveCount}</b> · schema and mapping failures → {quarantineName(spec)} · visibility {spec.queue.visibilityTimeoutSeconds}s</dd>
                 </div>
                 <div><dt>idempotency ttl</dt><dd className="mono">{spec.idempotencyTtlSeconds}s</dd></div>
               </dl>

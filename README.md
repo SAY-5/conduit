@@ -335,8 +335,10 @@ idempotency store, queue, retry policy, token bucket, and Terraform resource set
 driven by a seeded PRNG and a virtual clock. `npm run selfcheck` in `web/` reproduces the
 figures above (60 deduplicated, 10 dead-lettered then replayed to 0, 8 resources planned for
 a fourth connector YAML, 26 for the shipped three) and checks that a malformed payload is
-quarantined rather than dead-lettered, as 44 assertions in Node. See
-[web/README.md](web/README.md).
+quarantined rather than dead-lettered, as 48 assertions in Node. The three connector YAMLs and
+the source schemas are embedded into the page from `connectors/` and `schemas/` by
+`npm run embed`, and CI runs `npm run embed:check` so the page cannot drift from the files it
+claims to show. See [web/README.md](web/README.md).
 
 ## LocalStack, not AWS
 
@@ -397,7 +399,7 @@ tests/              unit (respx, moto), integration (LocalStack), terraform (pla
   enqueueing.
 * The browser demo plans the per-connector quarantine queue: 8 resources for a new connector
   and 26 for the shipped base stack, as the real plan does. Its DLQ lab sends a malformed
-  payload to quarantine, and the self-check runs 44 assertions.
+  payload to quarantine, and the self-check runs 48 assertions.
 * ARCHITECTURE.md and CONTRIBUTING.md quote the current plan counts.
 
 ### v5.0.0

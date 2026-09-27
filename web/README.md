@@ -3,13 +3,19 @@
 Static browser demo of the connector kit. React 18 and TypeScript in strict mode, bundled by
 Vite; no backend, no Docker, nothing to install beyond npm.
 
+`connectors/*.yaml`, `schemas/*/v*.yaml` and the `Adapter` class the page quotes are embedded
+verbatim into `src/sim/config.generated.ts` by `scripts/embed-config.mjs`; `npm run embed:check`
+fails when the generated module and those files disagree, and CI runs it, so the configuration the
+page parses is the configuration the worker parses.
+
 `src/sim/` is a port of the Python package, not a mock of it: `prng.ts` (seeded PRNG and a
 virtual clock), `models.ts`, `specs.ts` (the YAML subset and `ConnectorSpec` validation),
 `idempotency.ts` (sha256 keys via Web Crypto and the conditional-put claim store), `queue.ts`
 (visibility timeout, receive count, redrive, list and replay), `retry.ts` (classification and
 full-jitter backoff), `throttle.ts` (token bucket and circuit breaker), `adapters.ts` (the three
-adapters and the fake targets), `schema.ts` (the shipped source schemas; a payload that fails
-one goes to the quarantine queue), `worker.ts`, `terraform.ts` (the resource set the modules
+adapters and the fake targets), `schema.ts` (the shipped source schemas, parsed from the embedded YAML; a
+payload that fails one goes to the quarantine queue), `mapping.ts` (render, default, coerce,
+validate and truncate every remote field, as `conduit/core/mapping.py` does), `worker.ts`, `terraform.ts` (the resource set the modules
 create), and `engine.ts` (the queues, workers, and the `make demo` scenario). Nothing in
 `src/sim` calls `Math.random`, `Date.now`, or `eval`, so a given seed always produces the same
 run.
@@ -20,14 +26,18 @@ run.
 npm install
 npm run dev         # vite dev server
 npm run build       # tsc -b && vite build, into dist/
-npm run selfcheck   # 44 assertions in node, exits non-zero on failure
+npm run embed       # regenerate src/sim/config.generated.ts from connectors/ and schemas/
+npm run embed:check # fail when the generated module no longer matches those files
+npm run selfcheck   # 48 assertions in node, exits non-zero on failure
 ```
 
 `npm run selfcheck` reproduces the figures in the top-level README (300 submitted, 60
 deduplicated, 60 retries, 10 dead-lettered and replayed to 0, 8 resources planned for a fourth
 connector YAML, 26 for the shipped three) and adds unit assertions on key derivation, the claim conditions, the backoff
-ceiling, the token bucket, the breaker, the redrive threshold, and a malformed payload landing in
-quarantine rather than the DLQ.
+ceiling, the token bucket, the breaker, the redrive threshold, the values parsed out of the shipped
+YAMLs (jira's burst of 5, its 5/30s breaker, its 120s Retry-After cap, the 255-character summary
+rule), and both quarantine stages: a payload that fails its source schema and a title that fails
+the webhook connector's `max_length` mapping rule, each landing in quarantine rather than the DLQ.
 
 ## Sections
 

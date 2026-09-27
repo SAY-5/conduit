@@ -75,6 +75,10 @@ export function Run() {
   const cancel = useRef(false);
 
   const planDiff = useMemo(() => diffPlans(plan(CONNECTOR_YAML), plan({ ...CONNECTOR_YAML, "pager-oncall": NEW_CONNECTOR_YAML })), []);
+  const pacing = useMemo(
+    () => Object.values(engine.specs).map((spec) => `${spec.name} ${spec.rateLimit.requestsPerSecond} a second with a burst of ${spec.rateLimit.burst}`).join(", "),
+    [engine],
+  );
 
   const refresh = useCallback(() => {
     setTable(rows(engine));
@@ -256,9 +260,10 @@ export function Run() {
               </table>
             </div>
             <p className="run-note">
-              <b>paced</b> counts sends the per-connector token bucket held back: jira runs at 10 requests a second with a burst of
-              one, slack at 20, the webhook receiver at 50. A 429 with <code>Retry-After</code> pauses every send on that
-              connector, not just the message that was throttled.
+              <b>paced</b> counts sends the per-connector token bucket held back, at the rates the shipped YAMLs set:{" "}
+              {pacing}. At this pace the bursts absorb the run, so the column stays at zero and the only thing that moves the
+              earliest allowed send is a 429 with <code>Retry-After</code>, which pauses every send on that connector rather
+              than only the message that was throttled.
             </p>
           </Reveal>
 

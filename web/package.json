@@ -1,7 +1,7 @@
 {
   "name": "conduit-web",
   "private": true,
-  "version": "0.1.0",
+  "version": "5.0.1",
   "type": "module",
   "engines": {
     "node": "^20.19.0 || >=22.12.0"
@@ -9,9 +9,11 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "bundle": "tsc -b && vite build",
     "preview": "vite preview",
-    "selfcheck": "tsx src/sim/selfcheck.ts",
-    "bundle": "tsc -b && vite build"
+    "embed": "node scripts/embed-config.mjs",
+    "embed:check": "node scripts/embed-config.mjs --check",
+    "selfcheck": "tsx src/sim/selfcheck.ts"
   },
   "dependencies": {
     "framer-motion": "^11.11.17",

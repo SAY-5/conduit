@@ -104,6 +104,21 @@ export class CircuitBreaker {
     return true;
   }
 
+  /** Whether a half-open probe is in flight. */
+  get isProbing(): boolean {
+    return this.probing;
+  }
+
+  /**
+   * Hand back a probe that ended without a verdict. A delivery that took the probe
+   * but reached neither recordSuccess nor recordFailure (a duplicate, a claim held
+   * elsewhere, retries exhausted on 429) has said nothing about the target, so
+   * the next delivery must be able to probe.
+   */
+  abandonProbe(): void {
+    this.probing = false;
+  }
+
   /** Reset; true when this closed a breaker that had been open. */
   recordSuccess(): boolean {
     const wasOpen = this.openedAt !== null;
