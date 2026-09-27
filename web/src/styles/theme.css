@@ -202,10 +202,15 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .table th { font-family: var(--font-mono); font-weight: 500; font-size: 0.7rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ivory-3); }
 .table td.mono { font-size: 0.78rem; }
 
-/* Stats */
+/* Stats, and the value tones every section uses */
 .stat { display: flex; flex-direction: column; gap: 0.2rem; }
 .stat-value { font-family: var(--font-display); font-weight: 600; font-size: clamp(1.6rem, 3vw, 2.4rem); letter-spacing: -0.03em; line-height: 1; font-variant-numeric: tabular-nums; }
 .stat-label { font-family: var(--font-mono); font-size: 0.7rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ivory-3); }
+.muted { color: var(--ivory-3); }
+.stat-dedup { color: #cbb7ff; }
+.stat-teal, .stat-ok { color: var(--teal-2); }
+.stat-warn { color: #f6d48d; }
+.stat-bad { color: #ff9a90; }
 
 /* Field / form */
 .field { display: flex; flex-direction: column; gap: 0.35rem; }
@@ -217,19 +222,25 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .textarea { min-height: 220px; line-height: 1.6; resize: vertical; }
 
 /* Segmented control */
-.seg { display: inline-flex; padding: 4px; border-radius: 999px; border: 1px solid var(--line); background: rgba(5, 10, 9, 0.6); gap: 2px; }
+.seg { display: inline-flex; flex-wrap: wrap; padding: 4px; border-radius: 999px; border: 1px solid var(--line); background: rgba(5, 10, 9, 0.6); gap: 2px; }
+.lab-actions .seg { max-width: 100%; }
 .seg button {
   border: 0; background: transparent; color: var(--ivory-2); padding: 0.45rem 0.95rem; border-radius: 999px; cursor: pointer;
-  font-weight: 500; font-size: 0.86rem; transition: background 0.25s, color 0.25s;
+  font-weight: 500; font-size: 0.86rem; white-space: nowrap; transition: background 0.25s, color 0.25s;
 }
 .seg button[aria-pressed="true"] { background: var(--teal); color: #06110f; }
 .seg button:hover:not([aria-pressed="true"]) { color: var(--ivory); background: rgba(236, 233, 220, 0.06); }
 
-/* Log stream */
+/* Log stream: one line per event, on one line, at its natural height */
 .log { font-family: var(--font-mono); font-size: 0.76rem; line-height: 1.55; display: flex; flex-direction: column; gap: 2px; max-height: 320px; overflow-y: auto; }
-.log-line { display: grid; grid-template-columns: 5.2rem 6.4rem 1fr; gap: 0.7rem; padding: 0.25rem 0.5rem; border-radius: 6px; color: var(--ivory-2); }
+.log-line {
+  display: grid; grid-template-columns: 5.2rem 6.4rem 1fr; gap: 0.7rem;
+  padding: 0.25rem 0.5rem; border-radius: 6px; color: var(--ivory-2);
+  white-space: nowrap; overflow: hidden; flex: 0 0 auto;
+}
+.log-line > span:last-child { overflow: hidden; text-overflow: ellipsis; }
 .log-line .t { color: var(--ivory-3); }
-.log-line .ev { font-weight: 600; }
+.log-line .ev { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
 .log-ok .ev { color: var(--teal-2); }
 .log-dedup .ev { color: #cbb7ff; }
 .log-retry .ev { color: #f6d48d; }
@@ -237,6 +248,8 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .log-dlq .ev { color: #ff8f84; }
 .log-replay .ev { color: var(--teal-2); }
 .log-claim .ev { color: var(--ivory-2); }
+.log-throttle .ev { color: #9fd0ff; }
+.log-breaker .ev { color: #ffb3aa; }
 
 /* Reduced motion */
 @media (prefers-reduced-motion: reduce) {
@@ -253,6 +266,7 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .code-wrap { position: relative; display: flex; flex-direction: column; gap: 0.4rem; min-width: 0; }
 .code-label, .log-wrap .code-label {
   font-family: var(--font-mono); font-size: 0.68rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ivory-3);
+  overflow-wrap: anywhere;
 }
 .log-wrap { display: flex; flex-direction: column; gap: 0.4rem; min-width: 0; }
 .log { background: rgba(5, 10, 9, 0.7); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 0.6rem; }
@@ -280,14 +294,18 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .footer-list { list-style: none; padding: 0; margin: 0.8rem 0 0; display: flex; flex-direction: column; gap: 0.5rem; color: var(--ivory-2); font-size: 0.9rem; }
 .footer-list b { color: var(--ivory); font-weight: 500; }
 .footer-bottom { display: flex; justify-content: space-between; gap: 1rem; margin-top: 2.5rem; padding-top: 1.2rem; border-top: 1px solid var(--line); font-size: 0.72rem; color: var(--ivory-3); flex-wrap: wrap; }
+.footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.4rem;
+  margin-top: 2.2rem;
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+}
+.footer-links a { color: var(--ivory-2); }
+.footer-links a:hover { color: var(--teal-2); }
 @media (max-width: 800px) { .footer-grid { grid-template-columns: 1fr; } }
 
-/* polish: single-line logs, non-wrapping segmented labels */
-.log-line { white-space: nowrap; overflow: hidden; }
-.log-line > span:last-child { overflow: hidden; text-overflow: ellipsis; }
-.seg { flex-wrap: wrap; }
-.seg button { white-space: nowrap; }
-.lab-actions .seg { max-width: 100%; }
 @media (max-width: 480px) {
   .wrap { width: calc(100% - 1.5rem); }
   .lab { padding: 1.1rem 1rem; }
@@ -308,29 +326,3 @@ button, input, textarea, select { font: inherit; color: inherit; }
   transition: top 0.2s var(--ease);
 }
 .skip-link:focus-visible { top: 1rem; text-decoration: none; }
-
-/* Throttle and breaker events in the worker log */
-.log-throttle .ev { color: #9fd0ff; }
-.log-breaker .ev { color: #ffb3aa; }
-
-/* Footer source links */
-.footer-links {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem 1.4rem;
-  margin-top: 2.2rem;
-  font-family: var(--font-mono);
-  font-size: 0.76rem;
-}
-.footer-links a { color: var(--ivory-2); }
-.footer-links a:hover { color: var(--teal-2); }
-
-/* long request lines in code labels wrap instead of widening the page */
-.code-label { overflow-wrap: anywhere; }
-
-/* log lines are flex items: keep them at their natural height instead of
-   shrinking to fit when the stream is longer than the panel */
-.log-line { flex: 0 0 auto; }
-
-/* event names never bleed into the message column */
-.log-line .ev { overflow: hidden; text-overflow: ellipsis; }
