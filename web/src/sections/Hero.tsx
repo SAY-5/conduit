@@ -2,7 +2,7 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Chip, Counter, TYPE_TONE } from "../components/common";
 import { LogStream } from "../components/LogStream";
-import { DUPLICATES_PER_CONNECTOR, Engine, MALFORMED, UNIQUE_PER_CONNECTOR } from "../sim/engine";
+import { Engine, SCENARIO_MESSAGES } from "../sim/engine";
 import type { QueueMessage } from "../sim/queue";
 import { useScenario, type ScenarioPhase } from "../sim/useScenario";
 import { CONNECTOR_YAML, NEW_CONNECTOR_YAML } from "../sim/specs";
@@ -31,7 +31,6 @@ interface Particle {
 const LANES = ["slack-ops", "jira-support", "webhook-crm"] as const;
 const TARGET_LABEL: Record<string, string> = { "slack-ops": "chat.postMessage", "jira-support": "POST /rest/api/3/issue", "webhook-crm": "signed POST" };
 const TICK_MS = 55;
-const SCENARIO_MESSAGES = 3 * (UNIQUE_PER_CONNECTOR + DUPLICATES_PER_CONNECTOR) + Object.keys(MALFORMED).length;
 
 function snapshot(engine: Engine): LaneSnap[] {
   return LANES.map((name) => {

@@ -2,7 +2,7 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Chip, Counter, Reveal, SectionHead, TYPE_TONE } from "../components/common";
 import { LogStream } from "../components/LogStream";
-import { Engine, formatSummary } from "../sim/engine";
+import { DUPLICATES_TOTAL, Engine, formatSummary, MALFORMED_TOTAL, SCENARIO_MESSAGES, UNIQUE_TOTAL } from "../sim/engine";
 import { selfCheck, type CheckReport } from "../sim/selfcheck";
 import { CONNECTOR_YAML, NEW_CONNECTOR_YAML } from "../sim/specs";
 import { diffPlans, plan } from "../sim/terraform";
@@ -12,11 +12,11 @@ import "./run.css";
 
 const STAGE_LABEL: Record<ScenarioPhase, string> = {
   idle: "ready; press run to start the demo",
-  submitting: "conduit submit: 302 messages onto three queues, faults on",
+  submitting: `conduit submit: ${SCENARIO_MESSAGES} messages onto three queues, faults on`,
   draining: "workers polling, claiming keys, retrying and dead-lettering",
   clearing: "queues drained; DELETE /_faults on the webhook fake",
   replaying: "conduit dlq replay: dead letters back onto the work queue",
-  done: "run complete; every README figure reproduced",
+  done: "run complete; the delivery figures in the README block reproduced",
 };
 
 const STEPS: { stage: ScenarioPhase; label: string }[] = [
@@ -121,8 +121,9 @@ export function Run() {
           title={<>The whole run, and the numbers it prints</>}
           lede={
             <>
-              <code>make demo</code> submits 302 tasks across the three connectors with faults on: 240 unique, 60 resubmits, and
-              two payloads their source schema rejects. It drains the queues, clears the webhook fault, replays the dead letters,
+              <code>make demo</code> submits {SCENARIO_MESSAGES} tasks across the three connectors with faults on:{" "}
+              {UNIQUE_TOTAL} unique, {DUPLICATES_TOTAL} resubmits, and {MALFORMED_TOTAL} payloads their source schema rejects.
+              It drains the queues, clears the webhook fault, replays the dead letters,
               and plans a fourth connector. This is the same run, driven a tenth of a second at a time, ending in the delivery
               half of the summary block the README quotes; the ops and cost tables the README also prints need a running worker
               and a price list, so they are not reproduced here.

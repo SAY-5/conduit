@@ -7,7 +7,7 @@ import { makeTask, type Envelope, type Task } from "./models";
 import { Clock, Rng } from "./prng";
 import { listDeadLetters, Queue, replayDeadLetters, type QueueMessage } from "./queue";
 import { SCHEMAS } from "./schema";
-import { dlqName, loadAll, quarantineName, queueName, type ConnectorSpec } from "./specs";
+import { CONNECTOR_NAMES, dlqName, loadAll, quarantineName, queueName, type ConnectorSpec } from "./specs";
 import { percentile, Worker, type HandleTrace, type LogEvent } from "./worker";
 
 export const UNIQUE_PER_CONNECTOR = 80;
@@ -25,6 +25,12 @@ export const MALFORMED: Record<string, Partial<Task>> = {
   "jira-support": { priority: "cosmic" },
   "webhook-crm": { status: "archived" },
 };
+
+/** What one scenario submits, so no caption has to carry the total as a literal. */
+export const UNIQUE_TOTAL = CONNECTOR_NAMES.length * UNIQUE_PER_CONNECTOR;
+export const DUPLICATES_TOTAL = CONNECTOR_NAMES.length * DUPLICATES_PER_CONNECTOR;
+export const MALFORMED_TOTAL = Object.keys(MALFORMED).length;
+export const SCENARIO_MESSAGES = UNIQUE_TOTAL + DUPLICATES_TOTAL + MALFORMED_TOTAL;
 
 export interface ConnectorRuntime {
   spec: ConnectorSpec;
