@@ -147,13 +147,13 @@ export function Run() {
               seed D0D3904 <span aria-hidden>·</span> t+{clock.toFixed(1)}s
             </span>
           </div>
-          <p className="run-stage" role="status" aria-live="polite">
+          <p className="run-stage" role="status">
             {STAGE_LABEL[phase]}
           </p>
         </Reveal>
 
         <Reveal delay={0.1}>
-          <dl className="run-counters glass" aria-live="polite" aria-atomic="false">
+          <dl className="run-counters glass">
             <div className="stat">
               <dt className="stat-label">submitted</dt>
               <dd className="stat-value"><Counter value={submitted} /></dd>

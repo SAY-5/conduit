@@ -54,3 +54,16 @@ the webhook connector's `max_length` mapping rule, each landing in quarantine ra
 
 `vercel.json` builds with `npm run build` and serves `dist/` as a single-page app. The page is
 static: it fetches nothing at runtime beyond its own bundle and two font stylesheets.
+
+`public/preview.png` is the Open Graph card: a 1200x630 headless-Chrome screenshot of this page
+mid-run, not an illustration of it. The card's meta tags carry no absolute URL because the
+deployment host is not recorded in the repository, so `og:image` resolves against whichever
+origin serves the page.
+
+## Accessibility
+
+The worker log and the counter grid are not live regions: they change every few tens of
+milliseconds, which an assistive technology would read as an unbroken stream. Each section
+announces its phase transitions and its settled outcome through a single `role="status"`
+element instead, the log is a focusable scrollable region, and the particle legend is readable
+text with `aria-hidden` on the colour swatches alone.
