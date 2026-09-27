@@ -444,7 +444,8 @@ def main() -> int:
         f"(worker attempt-to-ack, n={len(all_latency)})",
         f"end-to-end latency     p50 {percentile(all_e2e, 50):.2f} s, p95 {percentile(all_e2e, 95):.2f} s "
         f"(submit-to-remote-receipt, n={len(all_e2e)}); queues drained in {drain_seconds:.1f}s",
-        "new integration from one file (connectors/pager-oncall.yaml, 10 lines):",
+        f"new integration from one file (connectors/pager-oncall.yaml, "
+        f"{len(NEW_CONNECTOR_YAML.splitlines())} lines):",
         f"  {plan_summary}",
     ]
     lines += [f"  + {addr}" for addr in plan_created]
