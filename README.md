@@ -278,21 +278,24 @@ before any key is claimed; the hard failures dead-letter. It then clears the web
 replays the dead letters, and plans a fourth connector. Output from a real run:
 
 ```
-conduit demo summary (run DF15F0D, LocalStack at http://localhost:4566)
+conduit demo summary (run DE5A251, LocalStack at http://localhost:4566)
+measured at commit 821e589, conduit 5.0.1, localstack/localstack:3.8, 2026-09-27
 ========================================================================
-tasks submitted        300  (240 unique + 60 duplicate resubmits)
+tasks submitted        302  (240 unique + 60 duplicate resubmits + 2 malformed)
 deduplicated           60  (must equal duplicates: ok)
 delivered per connector
   jira-support     80 delivered,  80 unique keys,  20 deduplicated (jira fake inbox)
   slack-ops        80 delivered,  80 unique keys,  20 deduplicated (slack fake inbox)
   webhook-crm      70 delivered,  70 unique keys,  20 deduplicated (webhook fake inbox)
 retried                60  (jira fake returned 429 60 times for 30 tasks)
-  backoff evidence     attempt 1 -> 30 retries, attempt 2 -> 30 retries; delay min/median/max 0.019s / 0.154s / 0.497s (policy base 0.25s x2, cap 8s, full jitter)
+  backoff evidence     attempt 1 -> 30 retries, attempt 2 -> 30 retries; delay min/median/max 0.001s / 0.179s / 0.478s (policy base 0.25s x2, cap 8s, full jitter)
 dead-lettered          10  (must equal hard failures 10: ok); conduit-webhook-crm-dlq after maxReceiveCount=2
   dead letters         0001, 0002, 0003, 0004, 0005, 0006, 0007, 0008, 0009, 0010
+quarantined            2  (must equal malformed payloads 2: ok); held in conduit-<connector>-quarantine, never dead-lettered
+  quarantine notes     jira-support/schema: priority enum; webhook-crm/schema: status enum
 DLQ replay             10 replayed after clearing the fault; DLQ now 0; webhook delivered 80/80 in 2.0s
-delivery latency       p50 2.0 ms, p95 354.5 ms (worker attempt-to-ack, n=230)
-end-to-end latency     p50 3.32 s, p95 13.24 s (submit-to-remote-receipt, n=230); queues drained in 16.4s
+delivery latency       p50 1.0 ms, p95 441.6 ms (worker attempt-to-ack, n=230)
+end-to-end latency     p50 2.73 s, p95 13.04 s (submit-to-remote-receipt, n=230); queues drained in 18.4s
 new integration from one file (connectors/pager-oncall.yaml, 10 lines):
   Plan: 8 to add, 0 to change, 0 to destroy.
   + module.connector["pager-oncall"].aws_iam_policy.worker
@@ -307,29 +310,36 @@ new integration from one file (connectors/pager-oncall.yaml, 10 lines):
 conduit ops summary
   connector         queue inflight   dlq  quar  delivered  per min  throttle  breaker  last error
   -----------------------------------------------------------------------------------------------
-  jira-support          0        0     0     0         80     55.2   5.0 tok   closed
-  slack-ops             0        0     0     0         80     49.5   5.0 tok   closed
-  webhook-crm           0        0     0     0         80     51.3  10.0 tok   closed  permanent DF15F0D-webhook-crm-0006: HTTP 400: {"error":"injected","reason":"hard_fail"}
+  jira-support          0        0     0     1         80     71.6   5.0 tok   closed  quarantined DE5A251-jira-support-bad-0001: priority: 'cosmic' is not one of ['low', 'normal', 'high', 'urgent']
+  slack-ops             0        0     0     0         80     86.9   5.0 tok   closed  
+  webhook-crm           0        0     0     1         80     84.6  10.0 tok   closed  quarantined DE5A251-webhook-crm-bad-0001: status: 'archived' is not one of ['open', 'in_progress', 'blocked', 'done', 'closed']
   -----------------------------------------------------------------------------------------------
-  total                 0        0     0     0        240
+  total                 0        0     0     2        240
 
 conduit ops costs
   connector              run  objects  sqs req  ddb write  ddb read       usd
   ---------------------------------------------------------------------------
-  jira-support       BF53F08       80      188        260       100    0.0004
-  slack-ops          6A4C8A1       80      129        260       100    0.0004
-  webhook-crm        05A284F       80      153        300       100    0.0005
+  jira-support       787A68A       80      187        260       100    0.0004
+  slack-ops          413F84F       80      121        260       100    0.0004
+  webhook-crm        C8C3F8C       80      147        300       100    0.0005
   ---------------------------------------------------------------------------
-  total                           240      470        820       300    0.0013
+  total                           240      455        820       300    0.0013
   priced at us-east-1 on-demand list: sqs_requests $0.4/M, dynamodb_writes $1.25/M, dynamodb_reads $0.25/M
 ========================================================================
 ```
 
 Every figure is read back from the queues, the fakes' inboxes (which record idempotency keys),
-the workers' JSON logs and `/metrics`, and a real `terraform plan`. The script exits non-zero
-if deduplicated != duplicates, dead letters != hard failures, or the replay does not drain the
-DLQ. The end-to-end p95 is dominated by the Jira connector's 10 requests/s rate limit plus its
-retries; per-attempt delivery latency is the worker's own measurement.
+the workers' JSON logs and `/metrics`, and a real `terraform plan`, and the second line of the
+block records the commit, the package version, the LocalStack image and the date that produced
+it, so a reader can reproduce it against a named commit. The script exits non-zero if
+deduplicated != duplicates, quarantined != malformed payloads, dead letters != hard failures,
+the replay does not drain the DLQ, or no retry was observed. The `sqs req` column counts API
+calls per worker process, so it grows with how long a worker has been running: each worker
+refreshes three queue depths at most every 10 seconds, and a longer-lived container legitimately
+reports more requests for the same 80 deliveries. The end-to-end p95 is dominated by the Jira
+connector's 10 requests/s rate limit plus its retries; per-attempt delivery latency is the
+worker's own measurement, and both move with how loaded the host is, so a rerun prints its own
+numbers rather than these.
 
 ## Browser demo
 
