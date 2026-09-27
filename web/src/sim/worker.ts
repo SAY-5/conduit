@@ -2,7 +2,8 @@
 
 import type { Adapter } from "./adapters";
 import { isDuplicate, type IdempotencyStore } from "./idempotency";
-import type { DeliveryResult } from "./models";
+import { validateTask } from "./mapping";
+import type { DeliveryResult, QuarantineNote, Task } from "./models";
 import type { Clock, Rng } from "./prng";
 import type { Queue, QueueMessage } from "./queue";
 import { DeliveryError, retryCall, TransientError, type RetryOutcome } from "./retry";
@@ -190,6 +191,14 @@ export class Worker {
     }
   }
 
+  /** Check the source schema, then the mapping rules; first violation wins. */
+  inspect(task: Task): QuarantineNote | null {
+    const schemaNote = this.schema ? validatePayload(this.schema, task) : null;
+    if (schemaNote) return schemaNote;
+    const problem = validateTask(this.spec, task);
+    return problem ? { stage: "mapping", field: problem.field, reason: problem.reason, detail: problem.message } : null;
+  }
+
   async handle(message: QueueMessage): Promise<HandleTrace> {
     const env = message.envelope;
     const task = env.task;
@@ -200,7 +209,7 @@ export class Worker {
     s.queueLags.push(Math.max(0, this.clock.now() - env.submittedAt));
     const short = key.slice(0, 12);
 
-    const note = this.schema ? validatePayload(this.schema, task) : null;
+    const note = this.inspect(task);
     if (note) {
       this.quarantine?.send({ ...env, quarantine: note });
       this.queue.delete(message.messageId);
@@ -208,14 +217,6 @@ export class Worker {
       this.log({ kind: "quarantine", event: "delivery.quarantined", taskId: task.id, key: short, detail: `stage=${note.stage} field=${note.field} reason=${note.reason}` });
       const result: DeliveryResult = { status: "quarantined", connector: name, taskId: task.id, idempotencyKey: key, remoteId: null, attempts: message.receiveCount, detail: `${note.stage} ${note.reason}: ${note.detail}` };
       return { message, claim: { acquired: false, state: null, remoteId: null, condition: "failed" }, result, retry: null, elapsed: 0, willDeadLetter: false, reason: "quarantined" };
-    }
-
-    if (!this.breaker.allow()) {
-      const hold = Math.floor(this.breaker.remaining()) + 1;
-      this.queue.changeVisibility(message.messageId, hold);
-      this.stats.breakerHolds += 1;
-      this.log({ kind: "breaker", event: "delivery.breaker_open", taskId: task.id, key: short, detail: `hold=${hold}s` });
-      return { message, claim: { acquired: false, state: null, remoteId: null, condition: "failed" }, result: null, retry: null, elapsed: 0, willDeadLetter: false, reason: "breaker_open" };
     }
 
     const claim = this.store.claim(key, name, task.id);
@@ -232,6 +233,18 @@ export class Worker {
       return { message, claim, result: null, retry: null, elapsed: 0, willDeadLetter: false, reason: "in_progress" };
     }
     this.log({ kind: "claim", event: "claim.acquired", taskId: task.id, key: short, detail: claim.condition });
+
+    // The claim comes first so a duplicate or a key held elsewhere never spends the
+    // half-open probe; only a delivery attempt may take it. A message the breaker
+    // turns away is held for at least the queue's visibility timeout.
+    if (!this.breaker.allow()) {
+      this.store.release(key);
+      const hold = Math.max(this.spec.queue.visibilityTimeoutSeconds, Math.floor(this.breaker.remaining()) + 1);
+      this.queue.changeVisibility(message.messageId, hold);
+      this.stats.breakerHolds += 1;
+      this.log({ kind: "breaker", event: "delivery.breaker_open", taskId: task.id, key: short, detail: `hold=${hold}s, claim released` });
+      return { message, claim, result: null, retry: null, elapsed: 0, willDeadLetter: false, reason: "breaker_open" };
+    }
 
     const remoteId = task.version > 1 ? this.store.latest(name, task.id) : null;
     this.throttle();
@@ -288,6 +301,10 @@ export class Worker {
       this.queue.changeVisibility(message.messageId, 0);
       const result: DeliveryResult = { status: "failed", connector: name, taskId: task.id, idempotencyKey: key, remoteId: null, attempts: message.receiveCount, detail: err.message };
       return { message, claim, result, retry, elapsed, willDeadLetter, reason };
+    } finally {
+      // A probe whose retries exhausted on 429 reached no verdict; hand it back so
+      // the breaker does not stay half open behind a probe nothing will release.
+      this.breaker.abandonProbe();
     }
   }
 

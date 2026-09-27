@@ -3,6 +3,7 @@ import { useCallback, useMemo, useState } from "react";
 import { Chip, Reveal, SectionHead } from "../components/common";
 import { LogStream } from "../components/LogStream";
 import { Engine } from "../sim/engine";
+import { useScenario } from "../sim/useScenario";
 import { makeTask } from "../sim/models";
 import "./dlq.css";
 
@@ -19,17 +20,8 @@ export function Dlq() {
   const rt = engine.connectors["webhook-crm"];
   const faultOn = rt.target.faults.hardFailTasks.size > 0;
 
-  const drain = useCallback(async () => {
-    let idle = 0;
-    while (idle < 3) {
-      const traces = await rt.worker.poll(3);
-      engine.clock.advance(0.1);
-      refresh();
-      if (!traces.length && rt.queue.messages.length === 0) idle += 1;
-      else idle = 0;
-      await wait(reduced ? 0 : 90);
-    }
-  }, [engine, rt, refresh, reduced]);
+  const scenario = useScenario(engine, { speed: { tick: 90, afterSubmit: 0, afterDrain: 0, afterReplay: 500 }, reduced: !!reduced, onTick: refresh });
+  const { drain } = scenario;
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -45,21 +37,20 @@ export function Dlq() {
   }, [engine, rt, refresh, drain]);
 
   const clearFault = useCallback(() => {
-    rt.target.clearFaults();
-    engine.emit({ connector: "webhook-crm", kind: "info", event: "faults.cleared", taskId: "", key: "", detail: "DELETE /_faults on the webhook fake" });
+    scenario.clearFault();
     refresh();
-  }, [rt, engine, refresh]);
+  }, [scenario, refresh]);
 
   const replay = useCallback(async () => {
     setBusy(true);
     setStage("replaying");
-    engine.replay("webhook-crm");
+    scenario.replay();
     refresh();
     await wait(reduced ? 0 : 500);
     await drain();
     setStage(rt.dlq.messages.length ? "loaded" : "drained");
     setBusy(false);
-  }, [engine, rt, refresh, drain, reduced]);
+  }, [scenario, rt, refresh, drain, reduced]);
 
   const dead = rt.dlq.messages;
   const held = rt.quarantine.messages;

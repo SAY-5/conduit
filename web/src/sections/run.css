@@ -49,8 +49,6 @@
   padding: 1.3rem 1.4rem;
   margin-top: 1.6rem;
 }
-.stat-teal { color: var(--teal-2); }
-.stat-warn { color: #f6d48d; }
 
 .run-grid {
   display: grid;

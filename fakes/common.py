@@ -14,14 +14,16 @@ from pydantic import BaseModel, Field
 class FaultSpec(BaseModel):
     """Failure injection, settable per fake at runtime or from the environment.
 
-    ``rate_limit_tasks`` get HTTP 429 for their first ``rate_limit_count`` calls.
-    ``hard_fail_tasks`` always get HTTP 400. ``fail_500_once`` returns one 500 on
+    ``rate_limit_tasks`` get HTTP 429 for their first ``rate_limit_count`` calls,
+    with ``Retry-After: <retry_after_seconds>`` on each. ``hard_fail_tasks``
+    always get HTTP 400. ``fail_500_once`` returns one 500 on
     the first call of any task, then behaves. ``outage`` fails every call with 503
     until it is cleared, which is what a downstream being down looks like.
     """
 
     rate_limit_tasks: list[str] = Field(default_factory=list)
     rate_limit_count: int = 2
+    retry_after_seconds: int = Field(default=0, ge=0)
     hard_fail_tasks: list[str] = Field(default_factory=list)
     fail_500_once: bool = False
     outage: bool = False
@@ -37,6 +39,7 @@ class FaultSpec(BaseModel):
         return cls(
             rate_limit_tasks=split("RATE_LIMIT_TASKS"),
             rate_limit_count=int(os.environ.get(f"{prefix}_RATE_LIMIT_COUNT", "2")),
+            retry_after_seconds=int(os.environ.get(f"{prefix}_RETRY_AFTER_SECONDS", "0")),
             hard_fail_tasks=split("HARD_FAIL_TASKS"),
             fail_500_once=flag("500_ONCE"),
             outage=flag("OUTAGE"),
@@ -72,7 +75,7 @@ class FakeState:
                     return JSONResponse(
                         {**error_body, "reason": "rate_limited"},
                         status_code=429,
-                        headers={"Retry-After": "0"},
+                        headers={"Retry-After": str(f.retry_after_seconds)},
                     )
             if f.fail_500_once and task_id not in self.fired_500:
                 self.fired_500.add(task_id)

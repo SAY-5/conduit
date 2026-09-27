@@ -2,13 +2,13 @@
 // unit assertions on the pieces those numbers depend on.
 // Run with `npm run selfcheck` (Node 20+, Web Crypto via globalThis.crypto).
 
-import { Engine, JIRA_429_ATTEMPTS, JIRA_RATE_LIMITED_TASKS, runScenario, UNIQUE_PER_CONNECTOR, WEBHOOK_HARD_FAIL_TASKS } from "./engine";
+import { Engine, JIRA_429_ATTEMPTS, JIRA_RATE_LIMITED_TASKS, runScenario, summarize, UNIQUE_PER_CONNECTOR, WEBHOOK_HARD_FAIL_TASKS, type PhaseOne, type ScenarioSetup, type Summary } from "./engine";
 import { idempotencyKey, IdempotencyStore, keyMaterial } from "./idempotency";
 import { makeTask } from "./models";
 import { Clock } from "./prng";
 import { Queue } from "./queue";
 import { backoffCeiling, classifyResponse, PermanentError, TransientError } from "./retry";
-import { CONNECTOR_YAML, loadSpec, NEW_CONNECTOR_YAML } from "./specs";
+import { CONNECTOR_YAML, describeRule, loadSpec, NEW_CONNECTOR_YAML } from "./specs";
 import { diffPlans, plan } from "./terraform";
 import { CircuitBreaker, TokenBucket } from "./throttle";
 
@@ -28,18 +28,31 @@ export interface CheckReport {
   assertions: number;
 }
 
+/**
+ * A finished run to check. A caller that has just run the scenario on screen passes its own
+ * engine and snapshots so the assertions describe what the viewer saw; Node passes nothing and
+ * the check runs its own.
+ */
+export interface FinishedRun {
+  engine: Engine;
+  setup: ScenarioSetup;
+  one: PhaseOne;
+  summary?: Summary;
+}
+
 /** The scenario numbers the README prints, checked against the values it prints. */
-async function scenarioLines(): Promise<CheckLine[]> {
-  const engine = new Engine("D0D3904");
-  const s = await runScenario(engine);
+async function scenarioLines(finished?: FinishedRun): Promise<CheckLine[]> {
+  const engine = finished ? finished.engine : new Engine("D0D3904");
+  const s = finished ? (finished.summary ?? summarize(engine, finished.setup, finished.one, finished.one.deadLetterIds.length)) : await runScenario(engine);
   const expectedDeadLetters = Array.from({ length: WEBHOOK_HARD_FAIL_TASKS }, (_, i) => `D0D3904-webhook-crm-${String(i + 1).padStart(4, "0")}`);
   const jira = engine.connectors["jira-support"];
   const totalAfter = Object.values(engine.connectors).reduce((n, rt) => n + rt.target.inbox.length, 0);
   const claimFailures = engine.store.events.filter((e) => e.outcome === "ConditionalCheckFailedException").length;
   const throttled = Object.values(engine.connectors).reduce((n, rt) => n + rt.worker.stats.rateLimitWaits, 0);
+  const bursts = Object.values(engine.connectors).map((rt) => `${rt.spec.name} ${rt.spec.rateLimit.requestsPerSecond}/s burst ${rt.spec.rateLimit.burst}`).join(", ");
   const honored = jira.worker.stats.retryAfterHonored;
   return [
-    { label: "tasks submitted", value: `${s.submitted}  (${s.unique} unique + ${s.duplicates} duplicate resubmits)`, ok: s.submitted === 300 },
+    { label: "tasks submitted", value: `${s.submitted}  (${s.unique} unique + ${s.duplicates} duplicate resubmits + ${s.malformed} malformed)`, ok: s.submitted === 302 && s.malformed === 2 },
     { label: "  unique tasks", value: `${s.unique} across ${Object.keys(engine.specs).length} connectors`, ok: s.unique === 240 },
     { label: "  resubmits", value: `${s.duplicates}`, ok: s.duplicates === 60 },
     { label: "deduplicated", value: `${s.deduplicated}  (must equal duplicates: ${s.deduplicated === s.duplicates ? "ok" : "MISMATCH"})`, ok: s.deduplicated === 60 && s.deduplicated === s.duplicates },
@@ -57,8 +70,9 @@ async function scenarioLines(): Promise<CheckLine[]> {
     { label: "  backoff evidence", value: `attempt 1 -> ${s.byAttempt[1] ?? 0}, attempt 2 -> ${s.byAttempt[2] ?? 0}; delay min/median/max ${s.delayMin.toFixed(3)}s / ${s.delayMedian.toFixed(3)}s / ${s.delayMax.toFixed(3)}s`, ok: s.byAttempt[1] === 30 && s.byAttempt[2] === 30 },
     { label: "  jitter within cap", value: `every delay in [0, ${backoffCeiling(2, jira.spec.retry).toFixed(3)}s]`, ok: s.delayMin >= 0 && s.delayMax <= backoffCeiling(2, jira.spec.retry) },
     { label: "  Retry-After honoured", value: `${honored} 429 responses fed back into the token bucket`, ok: honored === JIRA_RATE_LIMITED_TASKS * JIRA_429_ATTEMPTS },
-    { label: "  token bucket waits", value: `${throttled} sends paced by the per-connector bucket`, ok: throttled > 0 },
+    { label: "  token bucket waits", value: `${throttled} sends paced by the per-connector bucket; the shipped bursts (${bursts}) cover this run's pace, so only Retry-After moves the earliest send`, ok: throttled === 0 },
     { label: "  breakers", value: `0 opens (429 is throttling, not a target failure)`, ok: Object.values(engine.connectors).every((rt) => rt.worker.stats.breakerOpens === 0) },
+    { label: "quarantined", value: `${s.quarantined}  (must equal malformed payloads ${s.malformed}: ${s.quarantined === s.malformed ? "ok" : "MISMATCH"}); ${s.quarantineNotes.join("; ")}`, ok: s.quarantined === 2 && s.quarantineNotes.length === 2 && s.quarantineNotes.every((n) => n.includes("schema")) },
     { label: "dead-lettered", value: `${s.deadLettered}  (must equal hard failures ${WEBHOOK_HARD_FAIL_TASKS}: ${s.deadLettered === WEBHOOK_HARD_FAIL_TASKS ? "ok" : "MISMATCH"})`, ok: s.deadLettered === 10 },
     { label: "  dead letters", value: s.deadLetterIds.map((t) => t.slice(-4)).join(", "), ok: JSON.stringify(s.deadLetterIds) === JSON.stringify(expectedDeadLetters) },
     { label: "DLQ replay", value: `${s.replayed} replayed after clearing the fault; DLQ now ${s.dlqAfterReplay}; webhook delivered ${s.webhookDeliveredAfter}/80`, ok: s.replayed === 10 && s.dlqAfterReplay === 0 && s.webhookDeliveredAfter === 80 },
@@ -158,6 +172,34 @@ async function unitLines(): Promise<CheckLine[]> {
   const note = crm.quarantine.messages[0]?.envelope.quarantine;
   lines.push({ label: "quarantine", value: `status "archived" fails webhook-crm/v1 (${note?.reason ?? "no note"}): ${crm.quarantine.messages.length} in ${crm.quarantine.name}, ${crm.dlq.messages.length} in the DLQ, ${crm.target.inbox.length} delivered`, ok: crm.quarantine.messages.length === 1 && crm.dlq.messages.length === 0 && crm.target.inbox.length === 1 && note?.field === "status" && note.reason === "enum" });
 
+  const crmSpec = loadSpec("webhook-crm", CONNECTOR_YAML["webhook-crm"]);
+  lines.push({
+    label: "shipped jira spec",
+    value: `burst ${jira.rateLimit.burst}, breaker ${jira.breaker.failureThreshold}/${jira.breaker.recoverySeconds}s, Retry-After cap ${jira.rateLimit.maxRetryAfterSeconds}s, summary ${describeRule(jira.mapping.summary)}`,
+    ok: jira.rateLimit.burst === 5 && jira.breaker.failureThreshold === 5 && jira.breaker.recoverySeconds === 30 && jira.rateLimit.maxRetryAfterSeconds === 120 && jira.mapping.summary.maxLength === 255,
+  });
+  lines.push({
+    label: "  constant field",
+    value: `issuetype: ${describeRule(jira.mapping.issuetype)}`,
+    ok: jira.mapping.issuetype.source === null && jira.mapping.issuetype.default === "Task",
+  });
+  lines.push({
+    label: "  webhook rules",
+    value: `name: ${describeRule(crmSpec.mapping.name)}; state: ${describeRule(crmSpec.mapping.state)}`,
+    ok: crmSpec.mapping.name.maxLength === 200 && crmSpec.mapping.name.truncate === false && crmSpec.mapping.state.enum?.length === 5 && crmSpec.rateLimit.burst === 10,
+  });
+
+  const mapLab = new Engine("LAB-MAP");
+  const mapCrm = mapLab.connectors["webhook-crm"];
+  await mapLab.submit("webhook-crm", [makeTask({ id: "M-1", title: "x".repeat(240) })]);
+  await mapLab.drain();
+  const mapNote = mapCrm.quarantine.messages[0]?.envelope.quarantine;
+  lines.push({
+    label: "  mapping stage",
+    value: `a 240-character title fails mapping.name before any claim: stage ${mapNote?.stage ?? "none"}, field ${mapNote?.field ?? "none"}, reason ${mapNote?.reason ?? "none"}`,
+    ok: mapCrm.quarantine.messages.length === 1 && mapNote?.stage === "mapping" && mapNote.field === "name" && mapNote.reason === "max_length" && mapCrm.target.inbox.length === 0,
+  });
+
   const fourth = loadSpec("pager-oncall", NEW_CONNECTOR_YAML);
   lines.push({ label: "spec defaults", value: `pager-oncall: burst ${fourth.rateLimit.burst}, breaker ${fourth.breaker.failureThreshold}/${fourth.breaker.recoverySeconds}s, visibility ${fourth.queue.visibilityTimeoutSeconds}s`, ok: fourth.rateLimit.burst === 1 && fourth.breaker.failureThreshold === 5 && fourth.queue.visibilityTimeoutSeconds === 60 });
   let rejected = "";
@@ -171,8 +213,15 @@ async function unitLines(): Promise<CheckLine[]> {
   return lines;
 }
 
-export async function selfCheck(): Promise<CheckReport> {
-  const lines = [...(await scenarioLines()), ...terraformLines(), ...(await unitLines())];
+/** Hand the event loop back so a page stays responsive between assertion groups. */
+const yieldToPage = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+export async function selfCheck(finished?: FinishedRun): Promise<CheckReport> {
+  const scenario = await scenarioLines(finished);
+  await yieldToPage();
+  const terraform = terraformLines();
+  await yieldToPage();
+  const lines = [...scenario, ...terraform, ...(await unitLines())];
   const assertions = lines.filter((l) => l.ok !== null);
   const failed = assertions.filter((l) => l.ok === false).length;
   return { lines, ok: failed === 0, passed: assertions.length - failed, failed, assertions: assertions.length };

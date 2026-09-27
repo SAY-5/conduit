@@ -97,6 +97,13 @@ connector's quarantine queue with the field and reason, and counted in
 `conduit_quarantined_total{stage,reason}`, instead of cycling through retries into the DLQ.
 `conduit submit` applies the same rules and refuses the offending tasks up front.
 
+Malformed queue envelopes are logged by message ID without their contents and left
+unacknowledged for the queue's configured dead-letter redrive policy. Other valid
+messages in the same response continue normally. If provided, `submitted_at` must
+include a timezone, for example `2026-09-08T12:00:00Z`. The typed DLQ CLI only lists
+and replays valid envelopes; inspect malformed bodies through SQS tooling and correct
+them before resubmitting.
+
 The worker reads the same file to build the adapter, retry policy, rate limit, and breaker.
 Terraform reads it to create the three queues with the redrive policy, a least-privilege IAM
 policy and role, one SSM SecureString placeholder per secret, and a container definition.
@@ -245,7 +252,7 @@ show up in `conduit_queue_depth`.
 
 ```
 make setup          # uv sync
-make test-unit      # 168 tests, no Docker
+make test-unit      # 185 tests, no Docker
 make up             # LocalStack + fakes + one worker per connector
 make tf-apply       # terraform apply against LocalStack (26 resources)
 make test           # unit + LocalStack integration + terraform plan tests
@@ -256,30 +263,40 @@ make demo-down
 Requirements: Python 3.12 with [uv](https://docs.astral.sh/uv/), Docker with Compose, Terraform
 1.5 or newer.
 
+The interactive web demo in `web/` uses Node.js 20.19+ or 22.12+ with Vite 7.
+From that directory, run `npm ci`, `npm run build`, and `npm run selfcheck`.
+CI runs the build and simulation self-check on Node.js 22.
+
 ## make demo
 
-The demo submits 300 synthetic tasks (240 unique plus 60 duplicate resubmits, interleaved)
-across the three connectors with failure injection on: the Jira fake returns 429 for the first
-two attempts of 30 tasks and the webhook fake hard-fails 10 tasks with 400. It then clears the
-webhook fault, replays the dead letters, and plans a fourth connector. Output from a real run:
+The demo submits 302 synthetic tasks across the three connectors with failure injection on: 240
+unique, 60 duplicate resubmits interleaved with them, and two payloads their source schema
+rejects (a priority outside `schemas/jira-support/v2.yaml`'s enum and a status outside
+`schemas/webhook-crm/v1.yaml`'s), while the Jira fake returns 429 for the first two attempts of
+30 tasks and the webhook fake hard-fails 10 tasks with 400. The malformed pair is quarantined
+before any key is claimed; the hard failures dead-letter. It then clears the webhook fault,
+replays the dead letters, and plans a fourth connector. Output from a real run:
 
 ```
-conduit demo summary (run DF15F0D, LocalStack at http://localhost:4566)
+conduit demo summary (run DC7F4B5, LocalStack at http://localhost:4566)
+measured at commit 7e33d5b, conduit 5.0.1, localstack/localstack:3.8, 2026-09-27
 ========================================================================
-tasks submitted        300  (240 unique + 60 duplicate resubmits)
+tasks submitted        302  (240 unique + 60 duplicate resubmits + 2 malformed)
 deduplicated           60  (must equal duplicates: ok)
 delivered per connector
   jira-support     80 delivered,  80 unique keys,  20 deduplicated (jira fake inbox)
   slack-ops        80 delivered,  80 unique keys,  20 deduplicated (slack fake inbox)
   webhook-crm      70 delivered,  70 unique keys,  20 deduplicated (webhook fake inbox)
 retried                60  (jira fake returned 429 60 times for 30 tasks)
-  backoff evidence     attempt 1 -> 30 retries, attempt 2 -> 30 retries; delay min/median/max 0.019s / 0.154s / 0.497s (policy base 0.25s x2, cap 8s, full jitter)
+  backoff evidence     attempt 1 -> 30 retries, attempt 2 -> 30 retries; delay min/median/max 0.000s / 0.185s / 0.498s (policy base 0.25s x2, cap 8s, full jitter)
 dead-lettered          10  (must equal hard failures 10: ok); conduit-webhook-crm-dlq after maxReceiveCount=2
   dead letters         0001, 0002, 0003, 0004, 0005, 0006, 0007, 0008, 0009, 0010
+quarantined            2  (must equal malformed payloads 2: ok); held in conduit-<connector>-quarantine, never dead-lettered
+  quarantine notes     jira-support/schema: priority enum; webhook-crm/schema: status enum
 DLQ replay             10 replayed after clearing the fault; DLQ now 0; webhook delivered 80/80 in 2.0s
-delivery latency       p50 2.0 ms, p95 354.5 ms (worker attempt-to-ack, n=230)
-end-to-end latency     p50 3.32 s, p95 13.24 s (submit-to-remote-receipt, n=230); queues drained in 16.4s
-new integration from one file (connectors/pager-oncall.yaml, 10 lines):
+delivery latency       p50 2.0 ms, p95 449.0 ms (worker attempt-to-ack, n=230)
+end-to-end latency     p50 2.77 s, p95 14.26 s (submit-to-remote-receipt, n=230); queues drained in 19.7s
+new integration from one file (connectors/pager-oncall.yaml, 8 lines):
   Plan: 8 to add, 0 to change, 0 to destroy.
   + module.connector["pager-oncall"].aws_iam_policy.worker
   + module.connector["pager-oncall"].aws_iam_role.worker
@@ -293,29 +310,38 @@ new integration from one file (connectors/pager-oncall.yaml, 10 lines):
 conduit ops summary
   connector         queue inflight   dlq  quar  delivered  per min  throttle  breaker  last error
   -----------------------------------------------------------------------------------------------
-  jira-support          0        0     0     0         80     55.2   5.0 tok   closed
-  slack-ops             0        0     0     0         80     49.5   5.0 tok   closed
-  webhook-crm           0        0     0     0         80     51.3  10.0 tok   closed  permanent DF15F0D-webhook-crm-0006: HTTP 400: {"error":"injected","reason":"hard_fail"}
+  jira-support          0        0     0     1         80     53.1   5.0 tok   closed  quarantined DC7F4B5-jira-support-bad-0001: priority: 'cosmic' is not one of ['low', 'normal', 'high', 'urgent']
+  slack-ops             0        0     0     0         80     49.1   5.0 tok   closed  
+  webhook-crm           0        0     0     1         80     47.6  10.0 tok   closed  permanent DC7F4B5-webhook-crm-0006: HTTP 400: {"error":"injected","reason":"hard_fail"}
   -----------------------------------------------------------------------------------------------
-  total                 0        0     0     0        240
+  total                 0        0     0     2        240
 
 conduit ops costs
   connector              run  objects  sqs req  ddb write  ddb read       usd
   ---------------------------------------------------------------------------
-  jira-support       BF53F08       80      188        260       100    0.0004
-  slack-ops          6A4C8A1       80      129        260       100    0.0004
-  webhook-crm        05A284F       80      153        300       100    0.0005
+  jira-support       0ABD63F       80      191        260       100    0.0004
+  slack-ops          14E9CE1       80      129        260       100    0.0004
+  webhook-crm        DC91D81       80      156        300       100    0.0005
   ---------------------------------------------------------------------------
-  total                           240      470        820       300    0.0013
+  total                           240      476        820       300    0.0013
   priced at us-east-1 on-demand list: sqs_requests $0.4/M, dynamodb_writes $1.25/M, dynamodb_reads $0.25/M
 ========================================================================
 ```
 
 Every figure is read back from the queues, the fakes' inboxes (which record idempotency keys),
-the workers' JSON logs and `/metrics`, and a real `terraform plan`. The script exits non-zero
-if deduplicated != duplicates, dead letters != hard failures, or the replay does not drain the
-DLQ. The end-to-end p95 is dominated by the Jira connector's 10 requests/s rate limit plus its
-retries; per-attempt delivery latency is the worker's own measurement.
+the workers' JSON logs and `/metrics`, and a real `terraform plan`, and the second line of the
+block records the commit, the package version, the LocalStack image and the date that produced
+it, so a reader can reproduce it against a named commit. The script exits non-zero if
+deduplicated != duplicates, quarantined != malformed payloads, dead letters != hard failures,
+the replay does not drain the DLQ, or no retry was observed. The `sqs req` column counts API
+calls per worker process, so it grows with how long a worker has been running: each worker
+refreshes three queue depths at most every 10 seconds, and a longer-lived container legitimately
+reports more requests for the same 80 deliveries. The end-to-end p95 is dominated by the Jira
+connector's 10 requests/s rate limit plus its retries; per-attempt delivery latency is the
+worker's own measurement, and both move with how loaded the host is, so a rerun prints its own
+numbers rather than these. The `per min` throughput column and the `delay min/median/max` line
+are run-specific for the same reason: the first is deliveries divided by the wall-clock time the
+run took, and the second reports the full-jitter delays this run happened to draw.
 
 ## Browser demo
 
@@ -324,8 +350,10 @@ idempotency store, queue, retry policy, token bucket, and Terraform resource set
 driven by a seeded PRNG and a virtual clock. `npm run selfcheck` in `web/` reproduces the
 figures above (60 deduplicated, 10 dead-lettered then replayed to 0, 8 resources planned for
 a fourth connector YAML, 26 for the shipped three) and checks that a malformed payload is
-quarantined rather than dead-lettered, as 44 assertions in Node. See
-[web/README.md](web/README.md).
+quarantined rather than dead-lettered, as 49 assertions in Node. The three connector YAMLs and
+the source schemas are embedded into the page from `connectors/` and `schemas/` by
+`npm run embed`, and CI runs `npm run embed:check` so the page cannot drift from the files it
+claims to show. See [web/README.md](web/README.md).
 
 ## LocalStack, not AWS
 
@@ -386,7 +414,7 @@ tests/              unit (respx, moto), integration (LocalStack), terraform (pla
   enqueueing.
 * The browser demo plans the per-connector quarantine queue: 8 resources for a new connector
   and 26 for the shipped base stack, as the real plan does. Its DLQ lab sends a malformed
-  payload to quarantine, and the self-check runs 44 assertions.
+  payload to quarantine, and the self-check runs 49 assertions.
 * ARCHITECTURE.md and CONTRIBUTING.md quote the current plan counts.
 
 ### v5.0.0

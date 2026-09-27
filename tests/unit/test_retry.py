@@ -7,7 +7,6 @@ from conduit.core.retry import (
     PermanentError,
     TransientError,
     backoff_delay,
-    backoff_schedule,
     classify_exception,
     classify_response,
     retry_call,
@@ -58,7 +57,6 @@ def test_backoff_is_bounded_full_jitter():
         for _ in range(50):
             d = backoff_delay(attempt, policy, rng)
             assert 0 <= d <= ceiling
-    assert len(list(backoff_schedule(policy, rng))) == policy.max_attempts - 1
     with pytest.raises(ValueError):
         backoff_delay(0, policy)
 

@@ -1,26 +1,25 @@
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Chip, Counter, Reveal, SectionHead, TYPE_TONE } from "../components/common";
 import { LogStream } from "../components/LogStream";
-import { capturePhaseOne, Engine, formatSummary, setupScenario, summarize, type ScenarioSetup, type Summary } from "../sim/engine";
+import { DUPLICATES_TOTAL, Engine, formatSummary, MALFORMED_TOTAL, SCENARIO_MESSAGES, UNIQUE_TOTAL } from "../sim/engine";
 import { selfCheck, type CheckReport } from "../sim/selfcheck";
 import { CONNECTOR_YAML, NEW_CONNECTOR_YAML } from "../sim/specs";
 import { diffPlans, plan } from "../sim/terraform";
+import { useScenario, type ScenarioPhase } from "../sim/useScenario";
 import type { LogEvent } from "../sim/worker";
 import "./run.css";
 
-type Stage = "idle" | "submitting" | "draining" | "clearing" | "replaying" | "done";
-
-const STAGE_LABEL: Record<Stage, string> = {
+const STAGE_LABEL: Record<ScenarioPhase, string> = {
   idle: "ready; press run to start the demo",
-  submitting: "conduit submit: 300 messages onto three queues, faults on",
+  submitting: `conduit submit: ${SCENARIO_MESSAGES} messages onto three queues, faults on`,
   draining: "workers polling, claiming keys, retrying and dead-lettering",
   clearing: "queues drained; DELETE /_faults on the webhook fake",
   replaying: "conduit dlq replay: dead letters back onto the work queue",
-  done: "run complete; every README figure reproduced",
+  done: "run complete; the delivery figures in the README block reproduced",
 };
 
-const STEPS: { stage: Stage; label: string }[] = [
+const STEPS: { stage: ScenarioPhase; label: string }[] = [
   { stage: "submitting", label: "submit" },
   { stage: "draining", label: "drain" },
   { stage: "clearing", label: "clear fault" },
@@ -60,82 +59,46 @@ function rows(engine: Engine): Row[] {
   });
 }
 
-const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
 export function Run() {
   const reduced = useReducedMotion();
   const engine = useMemo(() => new Engine("D0D3904"), []);
-  const [stage, setStage] = useState<Stage>("idle");
   const [table, setTable] = useState<Row[]>(() => rows(engine));
   const [events, setEvents] = useState<LogEvent[]>([]);
   const [clock, setClock] = useState(0);
-  const [submitted, setSubmitted] = useState(0);
-  const [summary, setSummary] = useState<Summary | null>(null);
   const [report, setReport] = useState<CheckReport | null>(null);
-  const cancel = useRef(false);
 
   const planDiff = useMemo(() => diffPlans(plan(CONNECTOR_YAML), plan({ ...CONNECTOR_YAML, "pager-oncall": NEW_CONNECTOR_YAML })), []);
+  const pacing = useMemo(
+    () => Object.values(engine.specs).map((spec) => `${spec.name} ${spec.rateLimit.requestsPerSecond} a second with a burst of ${spec.rateLimit.burst}`).join(", "),
+    [engine],
+  );
 
   const refresh = useCallback(() => {
     setTable(rows(engine));
     setEvents(engine.log.slice(-120));
     setClock(engine.clock.now());
   }, [engine]);
+  const onTick = useCallback(() => refresh(), [refresh]);
 
-  const drain = useCallback(async () => {
-    const started = engine.clock.now();
-    let idle = 0;
-    while (!cancel.current && idle < 3) {
-      const traces = await engine.tick(0.1);
-      refresh();
-      if (!traces.length && engine.totalQueued() === 0) idle += 1;
-      else idle = 0;
-      await wait(reduced ? 0 : 45);
-    }
-    return engine.clock.now() - started;
-  }, [engine, refresh, reduced]);
+  const scenario = useScenario(engine, { speed: { tick: 45, afterSubmit: 700, afterDrain: 800, afterReplay: 400 }, reduced: !!reduced, onTick });
+  const { phase, running, submitted, setup, phaseOne, summary } = scenario;
 
   const run = useCallback(async () => {
-    cancel.current = false;
-    setSummary(null);
     setReport(null);
-    engine.reset();
-    refresh();
-    setStage("submitting");
-    const setup: ScenarioSetup = await setupScenario(engine);
-    setSubmitted(setup.submitted);
-    refresh();
-    await wait(reduced ? 0 : 700);
-    if (cancel.current) return;
+    await scenario.run();
+  }, [scenario]);
 
-    setStage("draining");
-    const one = capturePhaseOne(engine, await drain());
-    if (cancel.current) return;
+  // The assertions read the run that just finished on screen instead of replaying a third
+  // scenario on the main thread.
+  useEffect(() => {
+    if (phase !== "done" || !summary || !setup || !phaseOne) return;
+    let live = true;
+    void selfCheck({ engine, setup, one: phaseOne, summary }).then((r) => live && setReport(r));
+    return () => {
+      live = false;
+    };
+  }, [phase, summary, setup, phaseOne, engine]);
 
-    setStage("clearing");
-    engine.connectors["webhook-crm"].target.clearFaults();
-    engine.emit({ connector: "webhook-crm", kind: "info", event: "faults.cleared", taskId: "", key: "", detail: "DELETE /_faults on the webhook fake" });
-    refresh();
-    await wait(reduced ? 0 : 800);
-    if (cancel.current) return;
-
-    setStage("replaying");
-    const replayed = engine.replay("webhook-crm").length;
-    refresh();
-    await wait(reduced ? 0 : 400);
-    await drain();
-    if (cancel.current) return;
-
-    setSummary(summarize(engine, setup, one, replayed));
-    setStage("done");
-    setReport(await selfCheck());
-  }, [engine, refresh, drain, reduced]);
-
-  useEffect(() => () => {
-    cancel.current = true;
-  }, []);
-
-  const running = stage !== "idle" && stage !== "done";
   const totals = table.reduce(
     (acc, r) => ({
       queued: acc.queued + r.queued + r.inFlight,
@@ -146,7 +109,7 @@ export function Run() {
     }),
     { queued: 0, delivered: 0, dedup: 0, retried: 0, dlq: 0 },
   );
-  const stepIndex = STEPS.findIndex((s) => s.stage === stage);
+  const stepIndex = STEPS.findIndex((s) => s.stage === phase);
   const summaryText = summary ? formatSummary(summary, planDiff.add.map((r) => r.address), planDiff.summary) : "";
 
   return (
@@ -158,9 +121,12 @@ export function Run() {
           title={<>The whole run, and the numbers it prints</>}
           lede={
             <>
-              <code>make demo</code> submits 300 tasks across the three connectors with faults on, drains the queues, clears the
-              webhook fault, replays the dead letters, and plans a fourth connector. This is the same run, driven a tenth of a
-              second at a time, ending in the summary block the README quotes.
+              <code>make demo</code> submits {SCENARIO_MESSAGES} tasks across the three connectors with faults on:{" "}
+              {UNIQUE_TOTAL} unique, {DUPLICATES_TOTAL} resubmits, and {MALFORMED_TOTAL} payloads their source schema rejects.
+              It drains the queues, clears the webhook fault, replays the dead letters,
+              and plans a fourth connector. This is the same run, driven a tenth of a second at a time, ending in the delivery
+              half of the summary block the README quotes; the ops and cost tables the README also prints need a running worker
+              and a price list, so they are not reproduced here.
             </>
           }
         />
@@ -172,7 +138,7 @@ export function Run() {
             </button>
             <ol className="run-steps" aria-label="Run progress">
               {STEPS.map((s, i) => (
-                <li key={s.stage} className={`run-step ${stepIndex >= i && stepIndex >= 0 ? "run-step-on" : ""} ${stage === s.stage ? "run-step-now" : ""}`}>
+                <li key={s.stage} className={`run-step ${stepIndex >= i && stepIndex >= 0 ? "run-step-on" : ""} ${phase === s.stage ? "run-step-now" : ""}`}>
                   <span className="run-step-dot" aria-hidden />
                   {s.label}
                 </li>
@@ -182,13 +148,13 @@ export function Run() {
               seed D0D3904 <span aria-hidden>·</span> t+{clock.toFixed(1)}s
             </span>
           </div>
-          <p className="run-stage" role="status" aria-live="polite">
-            {STAGE_LABEL[stage]}
+          <p className="run-stage" role="status">
+            {STAGE_LABEL[phase]}
           </p>
         </Reveal>
 
         <Reveal delay={0.1}>
-          <dl className="run-counters glass" aria-live="polite" aria-atomic="false">
+          <dl className="run-counters glass">
             <div className="stat">
               <dt className="stat-label">submitted</dt>
               <dd className="stat-value"><Counter value={submitted} /></dd>
@@ -256,9 +222,10 @@ export function Run() {
               </table>
             </div>
             <p className="run-note">
-              <b>paced</b> counts sends the per-connector token bucket held back: jira runs at 10 requests a second with a burst of
-              one, slack at 20, the webhook receiver at 50. A 429 with <code>Retry-After</code> pauses every send on that
-              connector, not just the message that was throttled.
+              <b>paced</b> counts sends the per-connector token bucket held back, at the rates the shipped YAMLs set:{" "}
+              {pacing}. At this pace the bursts absorb the run, so the column stays at zero and the only thing that moves the
+              earliest allowed send is a 429 with <code>Retry-After</code>, which pauses every send on that connector rather
+              than only the message that was throttled.
             </p>
           </Reveal>
 

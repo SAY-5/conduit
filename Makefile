@@ -9,7 +9,7 @@ export AWS_ACCESS_KEY_ID ?= test
 export AWS_SECRET_ACCESS_KEY ?= test
 
 .PHONY: setup lint format test test-unit test-integration tf-init tf-validate tf-plan tf-apply tf-destroy image \
-        up down demo demo-down clean
+        up down demo demo-verify readme-check demo-down clean
 
 setup:            ## install the project and dev tools into .venv
 	$(UV) sync --all-extras
@@ -24,8 +24,10 @@ format:
 	$(UV) run ruff format .
 	terraform fmt -recursive terraform
 
-test-unit:        ## fast tests, no Docker
-	$(UV) run pytest tests/unit -q
+COV_FLOOR ?= 85
+
+test-unit:        ## fast tests, no Docker; fails under $(COV_FLOOR)% line coverage of conduit/
+	$(UV) run pytest tests/unit -q --cov=conduit --cov-report=term-missing:skip-covered --cov-fail-under=$(COV_FLOOR)
 
 test-integration: ## needs LocalStack (make up)
 	CONDUIT_LOCALSTACK_URL=$(LOCALSTACK_URL) $(UV) run pytest tests/integration tests/terraform -q -m "integration or terraform"
@@ -56,6 +58,12 @@ down:
 
 demo: up tf-apply ## full end-to-end run with the summary block
 	$(UV) run python demo/run.py
+
+demo-verify: demo  ## run the demo, then check the block pasted into README.md
+	$(UV) run python demo/check_readme.py
+
+readme-check:      ## check the pasted demo block's provenance without running the demo
+	$(UV) run python demo/check_readme.py
 
 demo-down: down
 	rm -f terraform/$(TF_STATE) terraform/$(TF_STATE).backup

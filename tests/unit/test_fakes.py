@@ -56,10 +56,16 @@ def test_fault_injection(specs, fake_clients, name):
     adapter = adapter_for(specs, name, client, "http://fake")
     client.post(
         "/_faults",
-        json={"rate_limit_tasks": ["T-2"], "rate_limit_count": 1, "hard_fail_tasks": ["T-3"]},
+        json={
+            "rate_limit_tasks": ["T-2"],
+            "rate_limit_count": 1,
+            "retry_after_seconds": 3,
+            "hard_fail_tasks": ["T-3"],
+        },
     )
-    with pytest.raises(TransientError):
+    with pytest.raises(TransientError) as throttled:
         adapter.deliver(Task(id="T-2", title="x"), "a" * 64)
+    assert throttled.value.status == 429 and throttled.value.retry_after == 3
     assert adapter.deliver(Task(id="T-2", title="x"), "a" * 64).remote_id
     with pytest.raises(PermanentError):
         adapter.deliver(Task(id="T-3", title="x"), "b" * 64)
@@ -105,3 +111,8 @@ def test_jira_fake_update_path(specs, fake_clients):
     ops = [e["op"] for e in client.get("/_inbox").json()["entries"]]
     assert ops == ["create", "update"]
     assert client.get("/_issues").json()["count"] == 1
+    auth = {"Authorization": "Basic Ym90OnRva2Vu"}
+    issue = client.get(f"/rest/api/3/issue/{created.remote_id}", headers=auth)
+    assert issue.status_code == 200 and issue.json()["key"] == created.remote_id
+    assert client.get(f"/rest/api/3/issue/{created.remote_id}").status_code == 401
+    assert client.get("/rest/api/3/issue/SUP-999", headers=auth).status_code == 404

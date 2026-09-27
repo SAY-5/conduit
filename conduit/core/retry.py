@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import random
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import httpx
@@ -75,11 +75,6 @@ def backoff_delay(attempt: int, policy: RetryPolicy, rng: random.Random | None =
         raise ValueError("attempt is 1-based")
     ceiling = min(policy.max_seconds, policy.base_seconds * (policy.multiplier ** (attempt - 1)))
     return (rng or random).uniform(0, ceiling)
-
-
-def backoff_schedule(policy: RetryPolicy, rng: random.Random | None = None) -> Iterator[float]:
-    for attempt in range(1, policy.max_attempts):
-        yield backoff_delay(attempt, policy, rng)
 
 
 @dataclass

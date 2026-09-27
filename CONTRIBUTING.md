@@ -10,6 +10,8 @@ make up             # LocalStack, fakes, workers
 make tf-apply       # terraform apply against LocalStack
 make test           # unit + integration + terraform tests
 make demo           # full end-to-end run; make demo-down to tear down
+make demo-verify    # the demo, then the provenance check on the block in README.md
+make readme-check   # that check on its own, no Docker
 ```
 
 Integration tests skip unless `CONDUIT_LOCALSTACK_URL` is set (`make test-integration` sets
@@ -36,6 +38,16 @@ it). Terraform tests need the `terraform` binary and network access for the firs
 
 * Conventional commit subjects on one line (`feat:`, `fix:`, `test:`, `docs:`, `chore:`).
 * Ruff is the formatter and linter (line length 100). Terraform is `terraform fmt` clean.
-* Tests accompany behaviour changes. Unit tests must not need Docker.
+* Tests accompany behaviour changes. Unit tests must not need Docker. `make test-unit` fails
+  below 85% line coverage of `conduit/` (87% when the floor was set; the remainder is the
+  AWS-facing code the LocalStack integration suite covers).
 * No credentials in YAML or code; secrets are env var names resolved at runtime and SSM
   placeholders in Terraform.
+* Every figure in a document comes from a run that is named beside it. The demo block in
+  README.md carries the commit, version, LocalStack image, and date that produced it;
+  `make readme-check` (also a CI step) fails when that commit is not an ancestor of HEAD or
+  the version and image no longer match, and lists the commits that have touched the measured
+  code since. Re-run `make demo` and repaste before tagging a release.
+* The browser demo parses the shipped `connectors/*.yaml` and `schemas/*/v*.yaml` rather than
+  its own copies: run `npm run embed` in `web/` after changing one, and `npm run embed:check`
+  (also a CI step) fails when the generated module and the files disagree.

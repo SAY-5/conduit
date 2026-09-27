@@ -1,8 +1,33 @@
 // Port of conduit/config.py: connector specs, one YAML per integration.
-// The three shipped YAMLs are embedded verbatim and parsed by the same
-// small parser the editor uses for a fourth file.
+// The three shipped YAMLs come from config.generated.ts, which scripts/embed-config.mjs
+// writes from connectors/*.yaml byte for byte; they are parsed by the same small
+// parser the editor uses for a fourth file.
+
+import { CONNECTOR_YAML } from "./config.generated";
+
+export { CONNECTOR_YAML, SCHEMA_YAML, SOURCE_PY } from "./config.generated";
 
 export type ConnectorType = "slack" | "jira" | "webhook";
+
+export type FieldType = "string" | "integer" | "number" | "boolean" | "list" | "any";
+export const FIELD_TYPES: FieldType[] = ["string", "integer", "number", "boolean", "list", "any"];
+
+export type YamlScalar = string | number | boolean | null;
+
+/**
+ * One remote field: where its value comes from and what shape it must have, as
+ * conduit/config.py FieldRule. A bare string in the YAML is a rule with only a
+ * source; a rule with a default and no source is a constant.
+ */
+export interface FieldRule {
+  source: string | null;
+  type: FieldType;
+  required: boolean;
+  enum: YamlScalar[] | null;
+  default: YamlScalar | null;
+  maxLength: number | null;
+  truncate: boolean;
+}
 
 export interface RetryPolicy {
   maxAttempts: number;
@@ -39,7 +64,7 @@ export interface ConnectorSpec {
   target: string;
   baseUrl: string | null;
   secrets: Record<string, string>;
-  mapping: Record<string, string>;
+  mapping: Record<string, FieldRule>;
   retry: RetryPolicy;
   rateLimit: RateLimit;
   breaker: BreakerSpec;
@@ -84,73 +109,6 @@ export const queueName = (spec: ConnectorSpec) => `conduit-${spec.name}`;
 export const dlqName = (spec: ConnectorSpec) => `conduit-${spec.name}-dlq`;
 export const quarantineName = (spec: ConnectorSpec) => `conduit-${spec.name}-quarantine`;
 
-export const CONNECTOR_YAML: Record<string, string> = {
-  "jira-support": `# Create or update an issue in the SUP project for every task revision.
-type: jira
-target: SUP
-base_url: \${JIRA_BASE_URL:-https://example.atlassian.net}
-secrets:
-  email: JIRA_EMAIL
-  api_token: JIRA_API_TOKEN
-mapping:
-  summary: title
-  description: body
-  issuetype: "Task"
-  customfield_10042: id            # external task id field
-retry:
-  max_attempts: 4
-  base_seconds: 0.25
-  max_seconds: 8
-rate_limit:
-  requests_per_second: 10
-queue:
-  max_receive_count: 3
-  visibility_timeout_seconds: 45
-idempotency_ttl_seconds: 1209600
-`,
-  "slack-ops": `# Post every task to the #ops channel as a Block Kit message.
-type: slack
-target: "#ops"
-base_url: \${SLACK_BASE_URL:-https://slack.com}   # the demo points this at a fake
-secrets:
-  token: SLACK_BOT_TOKEN
-mapping:
-  title: "[$priority] $title"
-  body: body
-retry:
-  max_attempts: 5
-  base_seconds: 0.2
-  max_seconds: 5
-rate_limit:
-  requests_per_second: 20
-queue:
-  max_receive_count: 3
-  visibility_timeout_seconds: 30
-`,
-  "webhook-crm": `# Signed JSON POST to the CRM ingest endpoint.
-type: webhook
-target: \${CRM_WEBHOOK_URL:-https://crm.example.com/hooks/conduit}
-secrets:
-  signing_secret: CRM_WEBHOOK_SECRET
-mapping:
-  external_id: id
-  revision: version
-  name: title
-  notes: body
-  state: status
-  owner: assignee
-retry:
-  max_attempts: 3
-  base_seconds: 0.1
-  max_seconds: 2
-rate_limit:
-  requests_per_second: 50
-queue:
-  max_receive_count: 2
-  visibility_timeout_seconds: 20
-`,
-};
-
 export const NEW_CONNECTOR_YAML = `# connectors/pager-oncall.yaml
 type: slack
 target: "#oncall"
@@ -162,8 +120,18 @@ queue:
   max_receive_count: 4
 `;
 
-// A small YAML subset: nested maps by two-space indentation, scalars, comments.
-export type YamlValue = string | number | boolean | null | YamlMap;
+/**
+ * How long the file is. The panel prints the YAML with a filename comment on top that the file
+ * demo/run.py writes does not carry, so the comment is left out and both surfaces report the
+ * same count for the same file.
+ */
+export const NEW_CONNECTOR_LINES = NEW_CONNECTOR_YAML.trimEnd()
+  .split("\n")
+  .filter((line) => !line.startsWith("#")).length;
+
+// A small YAML subset: nested maps by two-space indentation, scalars, inline
+// lists of scalars, comments.
+export type YamlValue = YamlScalar | YamlScalar[] | YamlMap;
 export interface YamlMap {
   [key: string]: YamlValue;
 }
@@ -191,7 +159,7 @@ export function parseYaml(text: string): YamlMap {
       parent[key] = child;
       stack.push({ indent, map: child });
     } else {
-      parent[key] = parseScalar(rest);
+      parent[key] = parseValue(rest);
     }
   }
   return root;
@@ -212,7 +180,15 @@ function stripComment(line: string): string {
   return line;
 }
 
-function parseScalar(s: string): YamlValue {
+function parseValue(s: string): YamlScalar | YamlScalar[] {
+  if (s.startsWith("[") && s.endsWith("]")) {
+    const inner = s.slice(1, -1).trim();
+    return inner === "" ? [] : inner.split(",").map((part) => parseScalar(part.trim()));
+  }
+  return parseScalar(s);
+}
+
+function parseScalar(s: string): YamlScalar {
   if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
     return s.slice(1, -1);
   }
@@ -234,6 +210,7 @@ export function interpolate(value: YamlValue, env: Record<string, string> = {}):
       throw new ConfigError(`environment variable ${name} is referenced but not set`);
     });
   }
+  if (Array.isArray(value)) return value.map((v) => interpolate(v, env) as YamlScalar);
   if (value && typeof value === "object") {
     const out: YamlMap = {};
     for (const [k, v] of Object.entries(value)) out[k] = interpolate(v, env);
@@ -253,9 +230,57 @@ function num(map: YamlMap, key: string, fallback: number, lo: number, hi: number
 function strMap(map: YamlMap, key: string): Record<string, string> {
   const v = map[key];
   if (v === undefined || v === null) return {};
-  if (typeof v !== "object") throw new ConfigError(`${key} must be a mapping`);
+  if (typeof v !== "object" || Array.isArray(v)) throw new ConfigError(`${key} must be a mapping`);
   const out: Record<string, string> = {};
   for (const [k, val] of Object.entries(v)) out[k] = String(val);
+  return out;
+}
+
+const isScalar = (v: unknown): v is YamlScalar => v === null || ["string", "number", "boolean"].includes(typeof v);
+
+function fieldRule(remote: string, raw: YamlValue): FieldRule {
+  const rule: FieldRule = { source: null, type: "any", required: false, enum: null, default: null, maxLength: null, truncate: true };
+  if (typeof raw === "string") return { ...rule, source: raw };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ConfigError(`mapping.${remote} must be a source string or a rule`);
+  }
+  if (raw.source !== undefined && raw.source !== null) {
+    if (typeof raw.source !== "string") throw new ConfigError(`mapping.${remote}.source must be a string`);
+    rule.source = raw.source;
+  }
+  if (raw.type !== undefined) {
+    if (typeof raw.type !== "string" || !FIELD_TYPES.includes(raw.type as FieldType)) {
+      throw new ConfigError(`mapping.${remote}.type must be one of ${FIELD_TYPES.join(", ")}`);
+    }
+    rule.type = raw.type as FieldType;
+  }
+  if (raw.required !== undefined) {
+    if (typeof raw.required !== "boolean") throw new ConfigError(`mapping.${remote}.required must be true or false`);
+    rule.required = raw.required;
+  }
+  if (raw.enum !== undefined && raw.enum !== null) {
+    if (!Array.isArray(raw.enum) || raw.enum.length === 0) throw new ConfigError(`mapping.${remote}.enum must list at least one value`);
+    rule.enum = raw.enum;
+  }
+  if (raw.default !== undefined) {
+    if (!isScalar(raw.default)) throw new ConfigError(`mapping.${remote}.default must be a scalar`);
+    rule.default = raw.default;
+  }
+  if (raw.max_length !== undefined) rule.maxLength = num(raw, "max_length", 1, 1, 1e9);
+  if (raw.truncate !== undefined) {
+    if (typeof raw.truncate !== "boolean") throw new ConfigError(`mapping.${remote}.truncate must be true or false`);
+    rule.truncate = raw.truncate;
+  }
+  if (rule.source === null && rule.default === null) throw new ConfigError(`mapping.${remote} needs a source or a default`);
+  return rule;
+}
+
+function mappingRules(raw: YamlMap): Record<string, FieldRule> {
+  const v = raw.mapping;
+  if (v === undefined || v === null) return {};
+  if (typeof v !== "object" || Array.isArray(v)) throw new ConfigError("mapping must be a mapping");
+  const out: Record<string, FieldRule> = {};
+  for (const [remote, rule] of Object.entries(v)) out[remote] = fieldRule(remote, rule);
   return out;
 }
 
@@ -305,7 +330,7 @@ export function loadSpec(name: string, text: string, env: Record<string, string>
     target,
     baseUrl,
     secrets,
-    mapping: strMap(raw, "mapping"),
+    mapping: mappingRules(raw),
     retry,
     rateLimit: {
       requestsPerSecond: num(rateRaw, "requests_per_second", DEFAULT_RATE_LIMIT.requestsPerSecond, 1e-9, 1e9),
@@ -328,3 +353,15 @@ export function loadAll(files: Record<string, string> = CONNECTOR_YAML): Record<
 }
 
 export const CONNECTOR_NAMES = Object.keys(CONNECTOR_YAML).sort();
+
+/** One line per rule, the way `conduit config show` would describe it. */
+export function describeRule(rule: FieldRule): string {
+  const parts: string[] = [];
+  if (rule.type !== "any") parts.push(rule.type);
+  if (rule.required) parts.push("required");
+  if (rule.enum) parts.push(`one of ${rule.enum.map(String).join("|")}`);
+  if (rule.default !== null) parts.push(`default ${String(rule.default)}`);
+  if (rule.maxLength !== null) parts.push(`max_length ${rule.maxLength}${rule.truncate ? "" : ", rejected when longer"}`);
+  const head = rule.source ?? "(constant)";
+  return parts.length ? `${head} (${parts.join(", ")})` : head;
+}

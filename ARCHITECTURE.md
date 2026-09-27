@@ -97,18 +97,29 @@ claim was released on failure, so a replay after the integration is fixed delive
 
 ## Worker
 
-`conduit/worker.py` is a single loop per connector: long-poll receive (up to 10 messages, 20 s
-wait), then for each message: record queue lag, validate the task against the mapping rules
-(a misfit is deleted from the queue, logged as `delivery.rejected` with field and reason, and
-never claims a key), claim, resolve `remote_id` for revisions above 1, throttle to the spec's
-`requests_per_second`, `retry_call(adapter.deliver)`, then either mark delivered and delete, or
-release and set visibility to 0. Metrics on `/metrics` (Prometheus client):
+`conduit/worker.py` is a single loop per connector over three queues: the work queue, its
+dead-letter queue, and its quarantine queue. Each iteration is a long-poll receive (up to 10
+messages, 20 s wait; a body that does not parse as an envelope is logged by message id and left
+for the redrive policy), then for each message: record queue lag, `inspect` the task against
+the source schema and then the mapping rules (first violation wins), and send a payload that
+fails either to `conduit-<name>-quarantine` with a `{stage, field, reason, detail}` note,
+logged as `delivery.quarantined`, without ever claiming a key. A payload that passes is claimed
+(a duplicate is acknowledged as `deduplicated`, a key held elsewhere is re-polled after 10 s),
+then gated by the breaker, which admits everything while closed and exactly one probe while
+half open; a duplicate never spends the probe because the claim comes first, and a probe that
+ends without a verdict (retries exhausted on 429) is handed back. A message the breaker turns
+away has its claim released and is held for the queue's visibility timeout. The delivery then
+resolves `remote_id` for revisions above 1, throttles through the token bucket, runs
+`retry_call(adapter.deliver)`, and either marks delivered and deletes, or releases the claim and
+sets visibility to 0. Metrics on `/metrics` (Prometheus client):
 `conduit_delivered_total`, `conduit_deduplicated_total`, `conduit_quarantined_total{stage,reason}`,
 `conduit_retried_total`, `conduit_failed_total{reason}`, `conduit_dead_lettered_total`,
 `conduit_delivery_seconds` (attempt to ack), `conduit_queue_lag_seconds` (submit to
 receive), and `conduit_queue_depth{queue,visibility}` for the connector's work, dlq, and
 quarantine queues (refreshed after a poll, at most once every 10 seconds), all labelled by
-connector. Logs are structlog, JSON when `CONDUIT_JSON_LOGS=1`.
+connector. Logs are structlog, JSON when `CONDUIT_JSON_LOGS=1`, written to stderr. The status
+row heartbeat and the depth refresh are bookkeeping: a refused DynamoDB or SQS call there is
+logged (`status.publish_failed`, `queue_depth.failed`) and retried on the next tick, never fatal.
 
 ## Terraform layout
 

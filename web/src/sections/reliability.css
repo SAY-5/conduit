@@ -4,9 +4,9 @@
 .lab-head p { color: var(--ivory-2); margin-top: 0.6rem; max-width: 80ch; font-size: 0.95rem; }
 .lab-head code { color: var(--teal-2); }
 .lab-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }
+.lab-outcome { color: var(--ivory-2); font-size: 0.86rem; min-height: 1.2em; margin: 0; }
 .lab-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 1.2rem; }
 .lab-grid > div { display: flex; flex-direction: column; gap: 0.4rem; min-width: 0; }
-.muted { color: var(--ivory-3); }
 .verdict { padding: 0.7rem 0.9rem; border-radius: var(--radius-sm); font-size: 0.86rem; border: 1px solid var(--line-strong); background: rgba(236, 233, 220, 0.04); color: var(--ivory-2); }
 .verdict code { color: var(--ivory); }
 .verdict strong { color: var(--teal-2); font-weight: 600; }

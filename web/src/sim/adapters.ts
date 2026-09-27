@@ -2,7 +2,8 @@
 // in fakes/: each adapter renders the request the real one sends, and each fake
 // target records an inbox keyed by Idempotency-Key with runtime fault injection.
 
-import { taskField, type DeliveryResult, type Task } from "./models";
+import { applyMapping } from "./mapping";
+import type { DeliveryResult, Task } from "./models";
 import type { Rng } from "./prng";
 import { classifyResponse, PermanentError, TransientError, type FakeResponse } from "./retry";
 import type { ConnectorSpec } from "./specs";
@@ -152,31 +153,9 @@ export abstract class Adapter {
     return `<${env}>`;
   }
 
-  /** Resolve a mapping value: a bare field path or a $-template string. */
-  renderField(template: string, task: Task): unknown {
-    if (!template.includes("$")) return taskField(task, template);
-    const values: Record<string, string> = {
-      id: task.id,
-      version: String(task.version),
-      title: task.title,
-      body: task.body,
-      status: task.status,
-      priority: task.priority,
-      assignee: task.assignee ?? "",
-      url: task.url ?? "",
-      labels: task.labels.join(","),
-    };
-    for (const [k, v] of Object.entries(task.fields)) if (["string", "number"].includes(typeof v)) values[k] = String(v);
-    return template.replace(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g, (m, a, b) => {
-      const name = a ?? b;
-      return name in values ? values[name] : m;
-    });
-  }
-
+  /** Every remote field, rendered, defaulted, coerced, checked, and truncated as the YAML rules say. */
   mapped(task: Task): Record<string, unknown> {
-    const out: Record<string, unknown> = {};
-    for (const [remote, source] of Object.entries(this.spec.mapping)) out[remote] = this.renderField(source, task);
-    return out;
+    return applyMapping(this.spec, task);
   }
 
   protected raiseForStatus(response: FakeResponse): void {

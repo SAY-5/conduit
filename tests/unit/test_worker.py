@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import time
 from collections import deque
 
 import pytest
 from conduit import metrics
 from conduit.adapters.base import Adapter
-from conduit.config import ConnectorSpec, FieldRule, QueueSpec, RetryPolicy
+from conduit.config import BreakerSpec, ConnectorSpec, FieldRule, QueueSpec, RetryPolicy
+from conduit.core.breaker import BreakerState
 from conduit.core.idempotency import MemoryIdempotencyStore, idempotency_key
 from conduit.core.queue import Message, SqsQueue
 from conduit.core.retry import PermanentError, TransientError
@@ -104,7 +106,7 @@ def envelope(spec: ConnectorSpec, task_id: str, version: int = 1) -> Envelope:
     )
 
 
-def make_worker(spec, script, *, quarantine=None, schema=None):
+def make_worker(spec, script, *, quarantine=None, schema=None, clock=time.monotonic):
     queue = FakeQueue(spec.queue.max_receive_count)
     adapter = ScriptedAdapter(spec, script)
     worker = Worker(
@@ -112,9 +114,10 @@ def make_worker(spec, script, *, quarantine=None, schema=None):
         adapter,
         MemoryIdempotencyStore(),
         queue,
-        quarantine=quarantine,
+        quarantine=quarantine or FakeQueue(spec.queue.max_receive_count),
         schema=schema,
         sleep=lambda _: None,
+        clock=clock,
     )
     return worker, queue, adapter
 
@@ -268,6 +271,7 @@ def test_rate_limit_spacing(spec):
         ScriptedAdapter(spec, {}),
         MemoryIdempotencyStore(),
         queue,
+        quarantine=FakeQueue(2),
         sleep=sleep,
         clock=lambda: clock["t"],
     )
@@ -275,6 +279,96 @@ def test_rate_limit_spacing(spec):
         queue.send(envelope(spec, f"T{i}"))
     worker.run(idle_polls=1, wait_seconds=0)
     assert len(slept) == 2 and all(abs(s - 0.5) < 1e-9 for s in slept)
+
+
+def breaker_rig(spec, script, *, visibility_timeout_seconds=60):
+    """A worker whose breaker opens on one 503 and half-opens after 5 s on the test's clock."""
+    spec = spec.model_copy(
+        update={
+            "retry": RetryPolicy(max_attempts=1, base_seconds=0.01, max_seconds=0.05),
+            "breaker": BreakerSpec(failure_threshold=1, recovery_seconds=5.0),
+            "queue": QueueSpec(
+                max_receive_count=10, visibility_timeout_seconds=visibility_timeout_seconds
+            ),
+        }
+    )
+    clock = {"t": 100.0}
+    worker, queue, adapter = make_worker(spec, script, clock=lambda: clock["t"])
+    return worker, queue, adapter, clock
+
+
+def open_then_half_open(worker, message, clock):
+    """Fail ``message`` against the target, then let the recovery window pass."""
+    assert worker.handle(message).status == DeliveryStatus.FAILED
+    assert worker.breaker.state is BreakerState.OPEN
+    clock["t"] += worker.breaker.recovery_seconds
+    assert worker.breaker.state is BreakerState.HALF_OPEN
+
+
+def test_a_duplicate_does_not_spend_the_half_open_probe(spec):
+    script = {"DOWN": [TransientError("503", status=503)]}
+    worker, queue, adapter, clock = breaker_rig(spec, script)
+    queue.send(envelope(spec, "OK"))
+    assert worker.handle(queue.receive()[0]).status == DeliveryStatus.DELIVERED
+    queue.send(envelope(spec, "DOWN"))
+    down = queue.receive()[0]
+    queue.send(envelope(spec, "OK"))
+    open_then_half_open(worker, down, clock)
+
+    duplicate = worker.handle(queue.receive()[0])
+    assert duplicate.status == DeliveryStatus.DEDUPLICATED
+    assert worker.breaker.state is BreakerState.HALF_OPEN and not worker.breaker.probing
+
+    assert worker.handle(queue.receive()[0]).status == DeliveryStatus.DELIVERED
+    assert worker.breaker.state is BreakerState.CLOSED
+    assert worker.stats.delivered == 2 and worker.stats.deduplicated == 1
+    assert adapter.calls == [("OK", 1, None), ("DOWN", 1, None), ("DOWN", 1, None)]
+
+
+def test_a_claim_held_elsewhere_does_not_spend_the_half_open_probe(spec):
+    script = {"DOWN": [TransientError("503", status=503)]}
+    worker, queue, adapter, clock = breaker_rig(spec, script)
+    queue.send(envelope(spec, "DOWN"))
+    open_then_half_open(worker, queue.receive()[0], clock)
+    down = queue.receive()[0]
+    held = envelope(spec, "HELD")
+    worker.store.claim(held.idempotency_key, connector=spec.name, task_id="HELD")
+    queue.send(held)
+
+    assert worker.handle(queue.receive()[0]) is None
+    assert worker.breaker.state is BreakerState.HALF_OPEN and not worker.breaker.probing
+    assert worker.handle(down).status == DeliveryStatus.DELIVERED
+    assert worker.breaker.state is BreakerState.CLOSED
+
+
+def test_a_probe_that_exhausts_on_429_is_handed_back(spec):
+    script = {"DOWN": [TransientError("503", status=503), TransientError("429", status=429)]}
+    worker, queue, adapter, clock = breaker_rig(spec, script)
+    queue.send(envelope(spec, "DOWN"))
+    open_then_half_open(worker, queue.receive()[0], clock)
+
+    probe = worker.handle(queue.receive()[0])
+    assert probe.status == DeliveryStatus.FAILED and "429" in probe.detail
+    assert worker.breaker.state is BreakerState.HALF_OPEN and not worker.breaker.probing
+    assert worker.stats.breaker_opens == 1
+
+    assert worker.handle(queue.receive()[0]).status == DeliveryStatus.DELIVERED
+    assert worker.breaker.state is BreakerState.CLOSED
+    assert len(adapter.calls) == 3
+
+
+def test_a_message_turned_away_by_an_open_breaker_waits_the_visibility_timeout(spec):
+    script = {"DOWN": [TransientError("503", status=503)]}
+    worker, queue, adapter, clock = breaker_rig(spec, script, visibility_timeout_seconds=45)
+    queue.send(envelope(spec, "DOWN"))
+    assert worker.handle(queue.receive()[0]).status == DeliveryStatus.FAILED
+    assert worker.breaker.state is BreakerState.OPEN
+
+    assert worker.handle(queue.receive()[0]) is None
+    assert queue.visibility_calls[-1] == 45
+    assert len(adapter.calls) == 1
+    key = envelope(spec, "DOWN").idempotency_key
+    assert worker.store.claim(key, connector=spec.name, task_id="DOWN").acquired
 
 
 class StubSqs:
