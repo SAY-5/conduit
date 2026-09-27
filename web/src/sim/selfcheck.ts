@@ -2,7 +2,7 @@
 // unit assertions on the pieces those numbers depend on.
 // Run with `npm run selfcheck` (Node 20+, Web Crypto via globalThis.crypto).
 
-import { Engine, JIRA_429_ATTEMPTS, JIRA_RATE_LIMITED_TASKS, runScenario, UNIQUE_PER_CONNECTOR, WEBHOOK_HARD_FAIL_TASKS } from "./engine";
+import { Engine, JIRA_429_ATTEMPTS, JIRA_RATE_LIMITED_TASKS, runScenario, summarize, UNIQUE_PER_CONNECTOR, WEBHOOK_HARD_FAIL_TASKS, type PhaseOne, type ScenarioSetup, type Summary } from "./engine";
 import { idempotencyKey, IdempotencyStore, keyMaterial } from "./idempotency";
 import { makeTask } from "./models";
 import { Clock } from "./prng";
@@ -28,10 +28,22 @@ export interface CheckReport {
   assertions: number;
 }
 
+/**
+ * A finished run to check. A caller that has just run the scenario on screen passes its own
+ * engine and snapshots so the assertions describe what the viewer saw; Node passes nothing and
+ * the check runs its own.
+ */
+export interface FinishedRun {
+  engine: Engine;
+  setup: ScenarioSetup;
+  one: PhaseOne;
+  summary?: Summary;
+}
+
 /** The scenario numbers the README prints, checked against the values it prints. */
-async function scenarioLines(): Promise<CheckLine[]> {
-  const engine = new Engine("D0D3904");
-  const s = await runScenario(engine);
+async function scenarioLines(finished?: FinishedRun): Promise<CheckLine[]> {
+  const engine = finished ? finished.engine : new Engine("D0D3904");
+  const s = finished ? (finished.summary ?? summarize(engine, finished.setup, finished.one, finished.one.deadLetterIds.length)) : await runScenario(engine);
   const expectedDeadLetters = Array.from({ length: WEBHOOK_HARD_FAIL_TASKS }, (_, i) => `D0D3904-webhook-crm-${String(i + 1).padStart(4, "0")}`);
   const jira = engine.connectors["jira-support"];
   const totalAfter = Object.values(engine.connectors).reduce((n, rt) => n + rt.target.inbox.length, 0);
@@ -201,8 +213,15 @@ async function unitLines(): Promise<CheckLine[]> {
   return lines;
 }
 
-export async function selfCheck(): Promise<CheckReport> {
-  const lines = [...(await scenarioLines()), ...terraformLines(), ...(await unitLines())];
+/** Hand the event loop back so a page stays responsive between assertion groups. */
+const yieldToPage = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+export async function selfCheck(finished?: FinishedRun): Promise<CheckReport> {
+  const scenario = await scenarioLines(finished);
+  await yieldToPage();
+  const terraform = terraformLines();
+  await yieldToPage();
+  const lines = [...scenario, ...terraform, ...(await unitLines())];
   const assertions = lines.filter((l) => l.ok !== null);
   const failed = assertions.filter((l) => l.ok === false).length;
   return { lines, ok: failed === 0, passed: assertions.length - failed, failed, assertions: assertions.length };

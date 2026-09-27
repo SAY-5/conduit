@@ -165,6 +165,12 @@ export class Engine {
     return listDeadLetters(this.connectors[name].dlq);
   }
 
+  /** Clear a fake target's injected faults, logged the way demo/run.py logs it. */
+  clearFaults(name: string): void {
+    this.connectors[name].target.clearFaults();
+    this.emit({ connector: name, kind: "info", event: "faults.cleared", taskId: "", key: "", detail: `DELETE /_faults on the ${this.specs[name].type} fake` });
+  }
+
   replay(name: string): QueueMessage[] {
     const rt = this.connectors[name];
     const moved = replayDeadLetters(rt.dlq, rt.queue);
@@ -320,7 +326,7 @@ export async function runScenario(engine: Engine): Promise<Summary> {
   engine.reset();
   const setup = await setupScenario(engine);
   const one = capturePhaseOne(engine, await engine.drain());
-  engine.connectors["webhook-crm"].target.clearFaults();
+  engine.clearFaults("webhook-crm");
   const replayed = engine.replay("webhook-crm").length;
   await engine.drain();
   return summarize(engine, setup, one, replayed);

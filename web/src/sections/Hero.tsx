@@ -2,13 +2,13 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Chip, Counter, TYPE_TONE } from "../components/common";
 import { LogStream } from "../components/LogStream";
-import { DUPLICATES_PER_CONNECTOR, Engine, MALFORMED, setupScenario, UNIQUE_PER_CONNECTOR } from "../sim/engine";
+import { DUPLICATES_PER_CONNECTOR, Engine, MALFORMED, UNIQUE_PER_CONNECTOR } from "../sim/engine";
+import type { QueueMessage } from "../sim/queue";
+import { useScenario, type ScenarioPhase } from "../sim/useScenario";
 import { CONNECTOR_YAML, NEW_CONNECTOR_YAML } from "../sim/specs";
 import { diffPlans, plan } from "../sim/terraform";
 import type { HandleTrace, LogEvent } from "../sim/worker";
 import "./hero.css";
-
-type Phase = "idle" | "queued" | "draining" | "paused" | "replaying" | "done";
 
 interface LaneSnap {
   name: string;
@@ -56,19 +56,14 @@ function kindOf(t: HandleTrace): Particle["kind"] {
   return t.willDeadLetter ? "dlq" : "bounce";
 }
 
-const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
 export function Hero() {
   const reduced = useReducedMotion();
   const engine = useMemo(() => new Engine("D0D3904"), []);
-  const [phase, setPhase] = useState<Phase>("idle");
   const [lanes, setLanes] = useState<LaneSnap[]>(() => snapshot(engine));
-  const [submitted, setSubmitted] = useState(0);
   const [particles, setParticles] = useState<Particle[]>([]);
   const [events, setEvents] = useState<LogEvent[]>([]);
   const [clock, setClock] = useState(0);
   const pid = useRef(0);
-  const cancel = useRef(false);
 
   const planDiff = useMemo(() => diffPlans(plan(CONNECTOR_YAML), plan({ ...CONNECTOR_YAML, "pager-oncall": NEW_CONNECTOR_YAML })), []);
 
@@ -90,55 +85,26 @@ export function Hero() {
     [reduced],
   );
 
-  const drainLoop = useCallback(async () => {
-    let idle = 0;
-    while (!cancel.current && idle < 3) {
-      const traces = await engine.tick(0.1);
+  const onTick = useCallback(
+    (traces: HandleTrace[]) => {
       spawn(traces);
       refresh();
-      if (traces.length === 0 && engine.totalQueued() === 0) idle += 1;
-      else idle = 0;
-      await wait(reduced ? 8 : TICK_MS);
-    }
-  }, [engine, refresh, spawn, reduced]);
+    },
+    [spawn, refresh],
+  );
 
-  const run = useCallback(async () => {
-    cancel.current = false;
-    engine.reset();
-    setParticles([]);
-    setSubmitted(0);
-    refresh();
-    setPhase("queued");
-    const setup = await setupScenario(engine);
-    setSubmitted(setup.submitted);
-    refresh();
-    await wait(reduced ? 100 : 900);
-    if (cancel.current) return;
-    setPhase("draining");
-    await drainLoop();
-    if (cancel.current) return;
-    setPhase("paused");
-    await wait(reduced ? 100 : 1100);
-    if (cancel.current) return;
-    engine.connectors["webhook-crm"].target.clearFaults();
-    engine.emit({ connector: "webhook-crm", kind: "info", event: "faults.cleared", taskId: "", key: "", detail: "DELETE /_faults on the webhook fake" });
-    const moved = engine.replay("webhook-crm");
-    spawn(moved.map((m) => ({ message: m, reason: "delivered", retry: null, claim: { acquired: true, state: null, remoteId: null, condition: "attribute_not_exists" }, result: null, elapsed: 0, willDeadLetter: false })));
-    setPhase("replaying");
-    refresh();
-    await wait(reduced ? 50 : 500);
-    await drainLoop();
-    if (cancel.current) return;
-    setPhase("done");
-  }, [engine, refresh, drainLoop, spawn, planDiff, reduced]);
+  const onReplay = useCallback(
+    (moved: QueueMessage[]) => spawn(moved.map((m) => ({ message: m, reason: "delivered", retry: null, claim: { acquired: true, state: null, remoteId: null, condition: "attribute_not_exists" }, result: null, elapsed: 0, willDeadLetter: false }))),
+    [spawn],
+  );
+
+  const scenario = useScenario(engine, { speed: { tick: TICK_MS, afterSubmit: 900, afterDrain: 1100, afterReplay: 500 }, reduced: !!reduced, onTick, onReplay });
+  const { phase, running, submitted } = scenario;
 
   useEffect(() => {
-    const t = setTimeout(() => void run(), 700);
-    return () => {
-      clearTimeout(t);
-      cancel.current = true;
-    };
-  }, [run]);
+    const t = setTimeout(() => void scenario.run(), 700);
+    return () => clearTimeout(t);
+  }, [scenario.run]);
 
   const totalDedup = lanes.reduce((n, l) => n + l.dedup, 0);
   const totalDlq = lanes.reduce((n, l) => n + l.dlq, 0);
@@ -146,13 +112,11 @@ export function Hero() {
   const totalQuarantined = lanes.reduce((n, l) => n + l.quarantine, 0);
   const totalQueued = lanes.reduce((n, l) => n + l.queued, 0);
   const totalRetried = lanes.reduce((n, l) => n + l.retried, 0);
-  const running = phase === "draining" || phase === "replaying" || phase === "queued" || phase === "paused";
-
-  const phaseLabel: Record<Phase, string> = {
+  const phaseLabel: Record<ScenarioPhase, string> = {
     idle: "ready",
-    queued: `${SCENARIO_MESSAGES} messages queued, faults on`,
+    submitting: `${SCENARIO_MESSAGES} messages queued, faults on`,
     draining: "workers polling",
-    paused: "queues drained; clearing the webhook fault",
+    clearing: "queues drained; clearing the webhook fault",
     replaying: "replaying dead letters",
     done: "all checks passed",
   };
@@ -193,7 +157,7 @@ export function Hero() {
             </div>
           </motion.dl>
           <div className="hero-actions">
-            <button className="btn btn-primary" onClick={() => void run()} disabled={running}>
+            <button className="btn btn-primary" onClick={() => void scenario.run()} disabled={running}>
               {running ? "Running" : "Run the demo again"}
             </button>
             <a className="btn" href="#interface">Read the interface</a>
