@@ -26,6 +26,7 @@ run.
 npm install
 npm run dev         # vite dev server
 npm run build       # tsc -b && vite build, into dist/
+npm run bundle      # the same two commands under a second name, for shells that reserve "build"
 npm run embed       # regenerate src/sim/config.generated.ts from connectors/ and schemas/
 npm run embed:check # fail when the generated module no longer matches those files
 npm run selfcheck   # 48 assertions in node, exits non-zero on failure
