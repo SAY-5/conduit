@@ -13,7 +13,7 @@ type Stage = "idle" | "submitting" | "draining" | "clearing" | "replaying" | "do
 
 const STAGE_LABEL: Record<Stage, string> = {
   idle: "ready; press run to start the demo",
-  submitting: "conduit submit: 300 messages onto three queues, faults on",
+  submitting: "conduit submit: 302 messages onto three queues, faults on",
   draining: "workers polling, claiming keys, retrying and dead-lettering",
   clearing: "queues drained; DELETE /_faults on the webhook fake",
   replaying: "conduit dlq replay: dead letters back onto the work queue",
@@ -162,9 +162,11 @@ export function Run() {
           title={<>The whole run, and the numbers it prints</>}
           lede={
             <>
-              <code>make demo</code> submits 300 tasks across the three connectors with faults on, drains the queues, clears the
-              webhook fault, replays the dead letters, and plans a fourth connector. This is the same run, driven a tenth of a
-              second at a time, ending in the summary block the README quotes.
+              <code>make demo</code> submits 302 tasks across the three connectors with faults on: 240 unique, 60 resubmits, and
+              two payloads their source schema rejects. It drains the queues, clears the webhook fault, replays the dead letters,
+              and plans a fourth connector. This is the same run, driven a tenth of a second at a time, ending in the delivery
+              half of the summary block the README quotes; the ops and cost tables the README also prints need a running worker
+              and a price list, so they are not reproduced here.
             </>
           }
         />

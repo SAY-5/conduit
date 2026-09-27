@@ -16,6 +16,16 @@ export const JIRA_RATE_LIMITED_TASKS = 30;
 export const JIRA_429_ATTEMPTS = 2;
 export const WEBHOOK_HARD_FAIL_TASKS = 10;
 
+/**
+ * Payloads their source schema rejects, mirroring demo/run.py: only a connector whose schema
+ * constrains a value can be violated by a payload the Task model accepts, so jira's priority
+ * enum and the CRM's status enum carry one each, and slack-ops submits none.
+ */
+export const MALFORMED: Record<string, Partial<Task>> = {
+  "jira-support": { priority: "cosmic" },
+  "webhook-crm": { status: "archived" },
+};
+
 export interface ConnectorRuntime {
   spec: ConnectorSpec;
   queue: Queue;
@@ -31,6 +41,7 @@ export interface Summary {
   submitted: number;
   unique: number;
   duplicates: number;
+  malformed: number;
   deduplicated: number;
   delivered: Record<string, number>;
   uniqueKeys: Record<string, number>;
@@ -44,6 +55,8 @@ export interface Summary {
   delayMax: number;
   deadLettered: number;
   deadLetterIds: string[];
+  quarantined: number;
+  quarantineNotes: string[];
   replayed: number;
   dlqAfterReplay: number;
   webhookDeliveredAfter: number;
@@ -180,10 +193,11 @@ export interface ScenarioSetup {
   rateLimited: string[];
   hardFailed: string[];
   duplicates: number;
+  malformed: number;
   submitted: number;
 }
 
-/** Faults on, 300 messages queued: the first half of demo/run.py. */
+/** Faults on, 302 messages queued: the first half of demo/run.py. */
 export async function setupScenario(engine: Engine): Promise<ScenarioSetup> {
   const tasks: Record<string, Task[]> = {};
   for (const name of Object.keys(engine.specs)) tasks[name] = engine.syntheticTasks(name);
@@ -193,17 +207,20 @@ export async function setupScenario(engine: Engine): Promise<ScenarioSetup> {
   engine.connectors["webhook-crm"].target.setFaults({ hardFailTasks: new Set(hardFailed) });
   let submitted = 0;
   let duplicates = 0;
+  let malformed = 0;
   for (const name of Object.keys(engine.specs)) {
     const unique = tasks[name];
     const healthy = unique.filter((t) => !hardFailed.includes(t.id));
     const resubmits = engine.rng.sample(healthy, DUPLICATES_PER_CONNECTOR);
-    const batch = engine.rng.shuffle([...unique, ...resubmits]);
+    const bad = MALFORMED[name] ? [makeTask({ id: `${engine.runId}-${name}-bad-0001`, title: `Malformed payload for ${name}`, body: "Rejected by the source schema before any claim.", labels: [name.split("-")[0], "demo"], ...MALFORMED[name] })] : [];
+    const batch = engine.rng.shuffle([...unique, ...resubmits, ...bad]);
     const sent = (await engine.submit(name, batch)).length;
     submitted += sent;
     duplicates += resubmits.length;
-    engine.emit({ connector: name, kind: "submit", event: "submit", taskId: "", key: "", detail: `${sent} messages (${unique.length} unique, ${resubmits.length} resubmits)` });
+    malformed += bad.length;
+    engine.emit({ connector: name, kind: "submit", event: "submit", taskId: "", key: "", detail: `${sent} messages (${unique.length} unique, ${resubmits.length} resubmits, ${bad.length} malformed)` });
   }
-  return { tasks, rateLimited, hardFailed, duplicates, submitted };
+  return { tasks, rateLimited, hardFailed, duplicates, malformed, submitted };
 }
 
 /** Everything read off the queues and inboxes before the fault is cleared. */
@@ -213,6 +230,7 @@ export interface PhaseOne {
   uniqueKeys: Record<string, number>;
   dedupPer: Record<string, number>;
   deadLetterIds: string[];
+  quarantineNotes: string[];
   byAttempt: Record<number, number>;
   delays: number[];
   latencies: number[];
@@ -238,6 +256,9 @@ export function capturePhaseOne(engine: Engine, drainSeconds: number): PhaseOne 
     uniqueKeys,
     dedupPer,
     deadLetterIds: engine.deadLetters("webhook-crm").map((m) => m.envelope.task.id).sort(),
+    quarantineNotes: Object.entries(engine.connectors).flatMap(([name, rt]) =>
+      rt.quarantine.messages.filter((m) => m.envelope.quarantine).map((m) => `${name}/${m.envelope.quarantine!.stage}: ${m.envelope.quarantine!.field} ${m.envelope.quarantine!.reason}`),
+    ),
     byAttempt,
     delays: Object.values(engine.connectors).flatMap((rt) => rt.worker.stats.retryDelays),
     latencies: Object.values(engine.connectors).flatMap((rt) => rt.worker.stats.latencies),
@@ -252,8 +273,10 @@ export function summarize(engine: Engine, setup: ScenarioSetup, one: PhaseOne, r
   const webhookAfter = engine.connectors["webhook-crm"].target.inbox.length;
   const deduplicated = Object.values(one.dedupPer).reduce((a, b) => a + b, 0);
   const deadLettered = one.deadLetterIds.length;
+  const quarantined = one.quarantineNotes.length;
   const problems: string[] = [];
   if (deduplicated !== setup.duplicates) problems.push(`deduplicated ${deduplicated} != duplicates ${setup.duplicates}`);
+  if (quarantined !== setup.malformed) problems.push(`quarantined ${quarantined} != malformed payloads ${setup.malformed}`);
   if (deadLettered !== WEBHOOK_HARD_FAIL_TASKS) problems.push(`dead letters ${deadLettered} != hard failures ${WEBHOOK_HARD_FAIL_TASKS}`);
   if (dlqAfter !== 0 || webhookAfter !== UNIQUE_PER_CONNECTOR) problems.push("replay did not drain the DLQ");
   for (const n of ["slack-ops", "jira-support"]) if (one.delivered[n] !== UNIQUE_PER_CONNECTOR) problems.push(`delivered ${n}=${one.delivered[n]}`);
@@ -263,6 +286,7 @@ export function summarize(engine: Engine, setup: ScenarioSetup, one: PhaseOne, r
     submitted: setup.submitted,
     unique: Object.values(setup.tasks).reduce((n, t) => n + t.length, 0),
     duplicates: setup.duplicates,
+    malformed: setup.malformed,
     deduplicated,
     delivered: one.delivered,
     uniqueKeys: one.uniqueKeys,
@@ -276,6 +300,8 @@ export function summarize(engine: Engine, setup: ScenarioSetup, one: PhaseOne, r
     delayMax: one.delays.length ? Math.max(...one.delays) : 0,
     deadLettered,
     deadLetterIds: one.deadLetterIds,
+    quarantined,
+    quarantineNotes: one.quarantineNotes,
     replayed,
     dlqAfterReplay: dlqAfter,
     webhookDeliveredAfter: webhookAfter,
@@ -308,7 +334,7 @@ export function formatSummary(s: Summary, planLines: string[], planSummary: stri
   const lines = [
     `conduit demo summary (run ${s.runId}, browser port of demo/run.py)`,
     "=".repeat(72),
-    `${pad("tasks submitted")}${s.submitted}  (${s.unique} unique + ${s.duplicates} duplicate resubmits)`,
+    `${pad("tasks submitted")}${s.submitted}  (${s.unique} unique + ${s.duplicates} duplicate resubmits + ${s.malformed} malformed)`,
     `${pad("deduplicated")}${s.deduplicated}  (must equal duplicates: ${s.deduplicated === s.duplicates ? "ok" : "MISMATCH"})`,
     "delivered per connector",
     ...Object.keys(s.delivered).map((n) => `  ${n.padEnd(18)}${String(s.delivered[n]).padStart(3)} delivered, ${String(s.uniqueKeys[n]).padStart(3)} unique keys, ${String(s.dedupPer[n]).padStart(3)} deduplicated (${inboxes[n] ?? "fake inbox"})`),
@@ -316,6 +342,8 @@ export function formatSummary(s: Summary, planLines: string[], planSummary: stri
     `${pad("  backoff evidence")}attempt 1 -> ${s.byAttempt[1] ?? 0} retries, attempt 2 -> ${s.byAttempt[2] ?? 0} retries; delay min/median/max ${s.delayMin.toFixed(3)}s / ${s.delayMedian.toFixed(3)}s / ${s.delayMax.toFixed(3)}s (policy base 0.25s x2, cap 8s, full jitter)`,
     `${pad("dead-lettered")}${s.deadLettered}  (must equal hard failures ${WEBHOOK_HARD_FAIL_TASKS}: ${s.deadLettered === WEBHOOK_HARD_FAIL_TASKS ? "ok" : "MISMATCH"}); conduit-webhook-crm-dlq after maxReceiveCount=2`,
     `${pad("  dead letters")}${s.deadLetterIds.map((t) => t.slice(-4)).join(", ")}`,
+    `${pad("quarantined")}${s.quarantined}  (must equal malformed payloads ${s.malformed}: ${s.quarantined === s.malformed ? "ok" : "MISMATCH"}); held in conduit-<connector>-quarantine, never dead-lettered`,
+    `${pad("  quarantine notes")}${s.quarantineNotes.join("; ")}`,
     `${pad("DLQ replay")}${s.replayed} replayed after clearing the fault; DLQ now ${s.dlqAfterReplay}; webhook delivered ${s.webhookDeliveredAfter}/${UNIQUE_PER_CONNECTOR}`,
     `${pad("delivery latency")}p50 ${s.p50Ms.toFixed(1)} ms, p95 ${s.p95Ms.toFixed(1)} ms (worker attempt-to-ack)`,
     `${pad("end-to-end latency")}p50 ${s.e2eP50.toFixed(2)} s, p95 ${s.e2eP95.toFixed(2)} s (submit-to-remote-receipt); queues drained in ${s.drainSeconds.toFixed(1)}s`,

@@ -26,7 +26,7 @@ export function LogStream({ events, limit = 80, follow = true, label = "worker l
   return (
     <div className="log-wrap">
       <span className="code-label">{label}</span>
-      <div className="log" ref={ref} role="log" aria-live="polite" aria-label={label}>
+      <div className="log" ref={ref} role="log" aria-live="off" aria-label={label} tabIndex={0}>
         {shown.length === 0 ? <div className="log-line"><span className="t">--</span><span className="ev">idle</span><span>waiting for messages</span></div> : null}
         {shown.map((e) => (
           <div className={`log-line ${KIND_CLASS[e.kind] ?? ""}`} key={e.seq}>

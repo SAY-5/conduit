@@ -31,7 +31,7 @@ npm run embed:check # fail when the generated module no longer matches those fil
 npm run selfcheck   # 48 assertions in node, exits non-zero on failure
 ```
 
-`npm run selfcheck` reproduces the figures in the top-level README (300 submitted, 60
+`npm run selfcheck` reproduces the figures in the top-level README (302 submitted, 2 quarantined, 60
 deduplicated, 60 retries, 10 dead-lettered and replayed to 0, 8 resources planned for a fourth
 connector YAML, 26 for the shipped three) and adds unit assertions on key derivation, the claim conditions, the backoff
 ceiling, the token bucket, the breaker, the redrive threshold, the values parsed out of the shipped
@@ -48,7 +48,7 @@ the webhook connector's `max_length` mapping rule, each landing in quarantine ra
 | `#reliability` | idempotency claims, the 429 backoff timeline, and a hard 400 bouncing into the DLQ |
 | `#dlq` | dead letters, a malformed payload held in quarantine, clearing the fault, replaying, draining to zero |
 | `#ship` | an editable connector YAML and the Terraform plan diff it produces |
-| `#run` | `make demo` end to end: live counters, worker log, and the summary block |
+| `#run` | `make demo`'s delivery half: live counters, worker log, and the summary block without the ops and cost tables |
 
 ## Deployment
 

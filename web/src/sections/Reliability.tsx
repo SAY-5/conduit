@@ -143,6 +143,14 @@ function BackoffLab() {
 
   const attempts: RetryAttempt[] = trace?.retry?.trace ?? [];
   const maxCeiling = Math.max(...Array.from({ length: policy.maxAttempts - 1 }, (_, i) => backoffCeiling(i + 1, policy)));
+  const last = attempts[attempts.length - 1];
+  const outcome = busy
+    ? `delivering with ${count} injected 429 response${count > 1 ? "s" : ""}`
+    : last
+      ? last.outcome === "ok"
+        ? `delivered on attempt ${last.attempt} after ${attempts.length - 1} retries`
+        : `budget exhausted after ${attempts.length} attempts; the message went back to the queue`
+      : "";
 
   return (
     <div className="lab glass">
@@ -159,7 +167,8 @@ function BackoffLab() {
         </div>
         <button className="btn btn-warn" onClick={() => void run()} disabled={busy}>Inject and deliver</button>
       </div>
-      <div className="attempts" aria-live="polite">
+      <p className="lab-outcome" role="status">{outcome}</p>
+      <div className="attempts">
         {attempts.length === 0 ? <p className="muted">Pick a burst size and deliver. The fake sets Retry-After: 0, so the jitter floor stays at zero.</p> : null}
         {attempts.slice(0, shownAttempts).map((a) => (
           <motion.div key={a.attempt} className={`attempt attempt-${a.outcome}`} initial={reduced ? false : { opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }}>

@@ -40,7 +40,7 @@ async function scenarioLines(): Promise<CheckLine[]> {
   const bursts = Object.values(engine.connectors).map((rt) => `${rt.spec.name} ${rt.spec.rateLimit.requestsPerSecond}/s burst ${rt.spec.rateLimit.burst}`).join(", ");
   const honored = jira.worker.stats.retryAfterHonored;
   return [
-    { label: "tasks submitted", value: `${s.submitted}  (${s.unique} unique + ${s.duplicates} duplicate resubmits)`, ok: s.submitted === 300 },
+    { label: "tasks submitted", value: `${s.submitted}  (${s.unique} unique + ${s.duplicates} duplicate resubmits + ${s.malformed} malformed)`, ok: s.submitted === 302 && s.malformed === 2 },
     { label: "  unique tasks", value: `${s.unique} across ${Object.keys(engine.specs).length} connectors`, ok: s.unique === 240 },
     { label: "  resubmits", value: `${s.duplicates}`, ok: s.duplicates === 60 },
     { label: "deduplicated", value: `${s.deduplicated}  (must equal duplicates: ${s.deduplicated === s.duplicates ? "ok" : "MISMATCH"})`, ok: s.deduplicated === 60 && s.deduplicated === s.duplicates },
@@ -60,6 +60,7 @@ async function scenarioLines(): Promise<CheckLine[]> {
     { label: "  Retry-After honoured", value: `${honored} 429 responses fed back into the token bucket`, ok: honored === JIRA_RATE_LIMITED_TASKS * JIRA_429_ATTEMPTS },
     { label: "  token bucket waits", value: `${throttled} sends paced by the per-connector bucket; the shipped bursts (${bursts}) cover this run's pace, so only Retry-After moves the earliest send`, ok: throttled === 0 },
     { label: "  breakers", value: `0 opens (429 is throttling, not a target failure)`, ok: Object.values(engine.connectors).every((rt) => rt.worker.stats.breakerOpens === 0) },
+    { label: "quarantined", value: `${s.quarantined}  (must equal malformed payloads ${s.malformed}: ${s.quarantined === s.malformed ? "ok" : "MISMATCH"}); ${s.quarantineNotes.join("; ")}`, ok: s.quarantined === 2 && s.quarantineNotes.length === 2 && s.quarantineNotes.every((n) => n.includes("schema")) },
     { label: "dead-lettered", value: `${s.deadLettered}  (must equal hard failures ${WEBHOOK_HARD_FAIL_TASKS}: ${s.deadLettered === WEBHOOK_HARD_FAIL_TASKS ? "ok" : "MISMATCH"})`, ok: s.deadLettered === 10 },
     { label: "  dead letters", value: s.deadLetterIds.map((t) => t.slice(-4)).join(", "), ok: JSON.stringify(s.deadLetterIds) === JSON.stringify(expectedDeadLetters) },
     { label: "DLQ replay", value: `${s.replayed} replayed after clearing the fault; DLQ now ${s.dlqAfterReplay}; webhook delivered ${s.webhookDeliveredAfter}/80`, ok: s.replayed === 10 && s.dlqAfterReplay === 0 && s.webhookDeliveredAfter === 80 },

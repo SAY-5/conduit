@@ -2,7 +2,7 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Chip, Counter, TYPE_TONE } from "../components/common";
 import { LogStream } from "../components/LogStream";
-import { Engine, setupScenario } from "../sim/engine";
+import { DUPLICATES_PER_CONNECTOR, Engine, MALFORMED, setupScenario, UNIQUE_PER_CONNECTOR } from "../sim/engine";
 import { CONNECTOR_YAML, NEW_CONNECTOR_YAML } from "../sim/specs";
 import { diffPlans, plan } from "../sim/terraform";
 import type { HandleTrace, LogEvent } from "../sim/worker";
@@ -18,6 +18,7 @@ interface LaneSnap {
   dedup: number;
   retried: number;
   dlq: number;
+  quarantine: number;
   target: string;
 }
 
@@ -30,6 +31,7 @@ interface Particle {
 const LANES = ["slack-ops", "jira-support", "webhook-crm"] as const;
 const TARGET_LABEL: Record<string, string> = { "slack-ops": "chat.postMessage", "jira-support": "POST /rest/api/3/issue", "webhook-crm": "signed POST" };
 const TICK_MS = 55;
+const SCENARIO_MESSAGES = 3 * (UNIQUE_PER_CONNECTOR + DUPLICATES_PER_CONNECTOR) + Object.keys(MALFORMED).length;
 
 function snapshot(engine: Engine): LaneSnap[] {
   return LANES.map((name) => {
@@ -42,6 +44,7 @@ function snapshot(engine: Engine): LaneSnap[] {
       dedup: rt.worker.stats.deduplicated,
       retried: rt.worker.stats.retried,
       dlq: rt.dlq.messages.length,
+      quarantine: rt.quarantine.messages.length,
       target: rt.spec.target,
     };
   });
@@ -64,7 +67,6 @@ export function Hero() {
   const [particles, setParticles] = useState<Particle[]>([]);
   const [events, setEvents] = useState<LogEvent[]>([]);
   const [clock, setClock] = useState(0);
-  const [planCount, setPlanCount] = useState(0);
   const pid = useRef(0);
   const cancel = useRef(false);
 
@@ -104,7 +106,6 @@ export function Hero() {
     cancel.current = false;
     engine.reset();
     setParticles([]);
-    setPlanCount(0);
     setSubmitted(0);
     refresh();
     setPhase("queued");
@@ -128,7 +129,6 @@ export function Hero() {
     await wait(reduced ? 50 : 500);
     await drainLoop();
     if (cancel.current) return;
-    setPlanCount(planDiff.add.length);
     setPhase("done");
   }, [engine, refresh, drainLoop, spawn, planDiff, reduced]);
 
@@ -143,13 +143,14 @@ export function Hero() {
   const totalDedup = lanes.reduce((n, l) => n + l.dedup, 0);
   const totalDlq = lanes.reduce((n, l) => n + l.dlq, 0);
   const totalDelivered = lanes.reduce((n, l) => n + l.inbox, 0);
+  const totalQuarantined = lanes.reduce((n, l) => n + l.quarantine, 0);
   const totalQueued = lanes.reduce((n, l) => n + l.queued, 0);
   const totalRetried = lanes.reduce((n, l) => n + l.retried, 0);
   const running = phase === "draining" || phase === "replaying" || phase === "queued" || phase === "paused";
 
   const phaseLabel: Record<Phase, string> = {
     idle: "ready",
-    queued: "300 messages queued, faults on",
+    queued: `${SCENARIO_MESSAGES} messages queued, faults on`,
     draining: "workers polling",
     paused: "queues drained; clearing the webhook fault",
     replaying: "replaying dead letters",
@@ -188,7 +189,7 @@ export function Hero() {
             </div>
             <div className="stat">
               <dt className="stat-label">resources per YAML</dt>
-              <dd className="stat-value stat-teal"><Counter value={planCount} /></dd>
+              <dd className="stat-value stat-teal"><Counter value={planDiff.add.length} /></dd>
             </div>
           </motion.dl>
           <div className="hero-actions">
@@ -196,7 +197,7 @@ export function Hero() {
               {running ? "Running" : "Run the demo again"}
             </button>
             <a className="btn" href="#interface">Read the interface</a>
-            <span className="hero-phase" aria-live="polite">
+            <span className="hero-phase" role="status">
               <span className={`dot ${running ? "dot-live" : ""}`} /> {phaseLabel[phase]} <span className="mono">t+{clock.toFixed(1)}s</span>
             </span>
           </div>
@@ -206,7 +207,7 @@ export function Hero() {
           <div className="board-head">
             <span className="mono">conduit submit tasks.json -c &lt;connector&gt;</span>
             <span className="board-totals mono">
-              queued {totalQueued} / delivered {totalDelivered} / retried {totalRetried}
+              queued {totalQueued} / delivered {totalDelivered} / retried {totalRetried} / quarantined {totalQuarantined}
             </span>
           </div>
           <div className="board-body">
@@ -214,12 +215,13 @@ export function Hero() {
               <div className="source-card">
                 <span className="code-label">submit</span>
                 <strong className="mono">{submitted}</strong>
-                <span className="source-sub">240 unique + 60 resubmits</span>
+                <span className="source-sub">240 unique + 60 resubmits + 2 malformed</span>
               </div>
               <div className="source-card source-faults">
                 <span className="code-label">faults</span>
                 <span className={`fault ${phase === "done" || phase === "replaying" || phase === "idle" ? "fault-off" : ""}`}>jira 429 x2 for 30 tasks</span>
                 <span className={`fault ${phase === "done" || phase === "replaying" || phase === "idle" ? "fault-off" : ""}`}>webhook 400 for 10 tasks</span>
+                <span className="fault fault-quarantine">2 payloads their schema rejects</span>
               </div>
             </div>
             <div className="board-lanes">
@@ -280,13 +282,13 @@ export function Hero() {
           </div>
         </motion.div>
       </div>
-      <div className="hero-legend wrap mono" aria-hidden>
-        <span><i className="particle-swatch particle-ok" /> delivered</span>
-        <span><i className="particle-swatch particle-retry" /> delivered after 429 retries</span>
-        <span><i className="particle-swatch particle-dedup" /> deduplicated</span>
-        <span><i className="particle-swatch particle-bounce" /> failed, redelivered</span>
-        <span><i className="particle-swatch particle-dlq" /> dead-lettered</span>
-        <span><i className="particle-swatch particle-replay" /> replayed</span>
+      <div className="hero-legend wrap mono">
+        <span><i className="particle-swatch particle-ok" aria-hidden /> delivered</span>
+        <span><i className="particle-swatch particle-retry" aria-hidden /> delivered after 429 retries</span>
+        <span><i className="particle-swatch particle-dedup" aria-hidden /> deduplicated</span>
+        <span><i className="particle-swatch particle-bounce" aria-hidden /> failed, redelivered</span>
+        <span><i className="particle-swatch particle-dlq" aria-hidden /> dead-lettered</span>
+        <span><i className="particle-swatch particle-replay" aria-hidden /> replayed</span>
       </div>
     </section>
   );
