@@ -403,6 +403,47 @@ tests/              unit (respx, moto), integration (LocalStack), terraform (pla
 
 ## Changelog
 
+### v6.0.0
+
+* `Worker` requires `quarantine=`. In v5.0.1 a worker built without one acknowledged a
+  payload that failed its schema or mapping rules and sent it nowhere.
+* `SqsQueue.delete_batch`, `SqsQueue.purge` and `conduit.core.retry.backoff_schedule` are
+  removed; `SqsQueue.client` exposes the boto3 client the handle wraps.
+* CLI log lines are written to stderr, resolved at write time; in v5.0.1 they went to stdout.
+  `dlq list` and `dlq replay` configure logging like the other commands.
+* `Envelope.submitted_at` must carry a timezone. A queue body that does not parse as an
+  envelope is logged by message id without its contents and left for the redrive policy, and
+  the valid messages in the same response are handled. In v5.0.1 one such body raised out of
+  `SqsQueue.receive` and ended the worker's run.
+* Only a delivery attempt can take the half-open probe: the breaker gate now follows the
+  idempotency claim, a probe that ends without a verdict is handed back
+  (`CircuitBreaker.abandon_probe`), and a message the breaker turns away has its claim
+  released and is held for at least the queue's visibility timeout. In v5.0.1 a duplicate or
+  a key held elsewhere that arrived first after the recovery window kept the probe, and the
+  worker then turned every message away, one second at a time, without calling the target
+  again.
+* A status row write that DynamoDB refuses is logged as `status.publish_failed` and retried
+  on the next tick instead of ending the run.
+* The fakes take `retry_after_seconds` (`FAKE_RETRY_AFTER_SECONDS`) and send it as
+  `Retry-After` on each 429, so `tests/integration/test_backpressure.py` measures the
+  connector-wide pause. `tests/integration/test_concurrency.py` runs two workers on one queue
+  and proves one delivery per key and lease takeover.
+* `make demo` submits 302 tasks, two of them payloads their source schema rejects, and reports
+  them held in quarantine; it clears quarantined payloads left by an earlier run, derives the
+  line count of the connector YAML it writes (8, where v5.0.1 printed 10), and stamps the
+  commit, package version, LocalStack image and date into the block. `make readme-check`,
+  also a CI step, fails when the pasted block's commit is not an ancestor of HEAD or its
+  version or image no longer match.
+* CI runs a `web` job (`npm run embed:check`, the bundle, the self-check), `make test-unit`
+  fails below 85% line coverage of `conduit/`, and the workflow can be dispatched by hand.
+* The browser demo embeds `connectors/*.yaml`, `schemas/*/v*.yaml` and the `Adapter` class
+  from the repository through `scripts/embed-config.mjs`, validates mapping rules as
+  `conduit/core/mapping.py` does, prints both sides of every self-check comparison, hashes the
+  whole engine state for `run reproducible`, and resets the rng, the queues' counters and the
+  fakes' counters on "Run again"; in v5.0.1 a second run on the same engine reported 120
+  429s instead of 60. The self-check runs 49 assertions.
+* Tests are 185 unit, 32 LocalStack integration and 3 terraform.
+
 ### v5.0.1
 
 * Workers now set `conduit_queue_depth{connector,queue,visibility}` for their own work,
