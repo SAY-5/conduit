@@ -455,7 +455,7 @@ tests/              unit (respx, moto), integration (LocalStack), terraform (pla
   enqueueing.
 * The browser demo plans the per-connector quarantine queue: 8 resources for a new connector
   and 26 for the shipped base stack, as the real plan does. Its DLQ lab sends a malformed
-  payload to quarantine, and the self-check runs 49 assertions.
+  payload to quarantine, and the self-check runs 44 assertions.
 * ARCHITECTURE.md and CONTRIBUTING.md quote the current plan counts.
 
 ### v5.0.0
