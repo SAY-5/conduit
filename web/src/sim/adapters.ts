@@ -37,9 +37,11 @@ export interface InboxEntry {
   replayed: boolean;
 }
 
+const noFaults = (): FaultSpec => ({ rateLimitTasks: new Set(), rateLimitCount: 2, hardFailTasks: new Set(), fail500Once: false });
+
 /** One FastAPI-style fake: /_inbox, /_faults, and the fault injection of fakes/common.py. */
 export class FakeTarget {
-  faults: FaultSpec = { rateLimitTasks: new Set(), rateLimitCount: 2, hardFailTasks: new Set(), fail500Once: false };
+  faults: FaultSpec = noFaults();
   readonly inbox: InboxEntry[] = [];
   readonly rateLimitHits = new Map<string, number>();
   private fired500 = new Set<string>();
@@ -62,6 +64,15 @@ export class FakeTarget {
 
   clearInbox(): void {
     this.inbox.length = 0;
+  }
+
+  /** Empty the inbox, drop the faults and zero the counters, as a new fake starts. */
+  reset(): void {
+    this.clearInbox();
+    this.setFaults(noFaults());
+    this.calls = 0;
+    this.rejected = 0;
+    this.lastLatency = 0;
   }
 
   seenKeys(): Set<string> {

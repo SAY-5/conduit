@@ -3,9 +3,16 @@
 
 export class Rng {
   private state: number;
+  private readonly initial: number;
 
   constructor(seed: string | number) {
-    this.state = typeof seed === "number" ? seed >>> 0 : hashSeed(seed);
+    this.initial = typeof seed === "number" ? seed >>> 0 : hashSeed(seed);
+    this.state = this.initial;
+  }
+
+  /** Back to the seed, so a reset engine draws the same sequence as a new one. */
+  reset(): void {
+    this.state = this.initial;
   }
 
   next(): number {
@@ -61,7 +68,7 @@ function hashSeed(s: string): number {
   return h;
 }
 
-/** Virtual clock; nothing in the sim reads Date.now. */
+/** Virtual clock; nothing in the sim reads the wall clock. */
 export class Clock {
   private t = 0;
   now(): number {

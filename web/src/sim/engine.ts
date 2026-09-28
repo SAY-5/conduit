@@ -184,17 +184,18 @@ export class Engine {
     return moved;
   }
 
+  /** Back to the state a new Engine with this seed starts in, so a second run repeats the first. */
   reset(): void {
     this.clock.reset();
+    this.rng.reset();
     this.store.reset();
     this.log.length = 0;
     this.seq = 0;
     for (const rt of Object.values(this.connectors)) {
-      rt.queue.purge();
-      rt.dlq.purge();
-      rt.quarantine.purge();
-      rt.target.clearInbox();
-      rt.target.clearFaults();
+      rt.queue.reset();
+      rt.dlq.reset();
+      rt.quarantine.reset();
+      rt.target.reset();
       rt.worker.reset();
     }
   }
