@@ -47,6 +47,8 @@ export class FakeTarget {
   private fired500 = new Set<string>();
   calls = 0;
   rejected = 0;
+  /** Every response this fake has answered with, counted by HTTP status. */
+  readonly responses = new Map<number, number>();
   /** Simulated wall time per call, seconds. */
   lastLatency = 0;
 
@@ -72,6 +74,7 @@ export class FakeTarget {
     this.setFaults(noFaults());
     this.calls = 0;
     this.rejected = 0;
+    this.responses.clear();
     this.lastLatency = 0;
   }
 
@@ -104,6 +107,12 @@ export class FakeTarget {
 
   /** Handle one request the way the fake app would; dedupes on Idempotency-Key like the webhook receiver. */
   handle(request: RenderedRequest, task: Task, replayed: boolean): FakeResponse {
+    const response = this.answer(request, task, replayed);
+    this.responses.set(response.status, (this.responses.get(response.status) ?? 0) + 1);
+    return response;
+  }
+
+  private answer(request: RenderedRequest, task: Task, replayed: boolean): FakeResponse {
     this.lastLatency = this.rng.uniform(0.0004, 0.0026);
     const fault = this.inject(task.id);
     if (fault) return fault;
