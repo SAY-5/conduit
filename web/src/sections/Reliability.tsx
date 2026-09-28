@@ -115,14 +115,14 @@ function ClaimLab() {
 /* Panel B: 429 burst with backoff */
 function BackoffLab() {
   const reduced = useReducedMotion();
-  const { engine, refresh } = useLab("LAB-429");
+  const { engine, refresh } = useLab(`LAB-${RATE_LIMIT_STATUS}`);
   const [count, setCount] = useState(2);
   const [busy, setBusy] = useState(false);
   const [trace, setTrace] = useState<HandleTrace | null>(null);
   const [shownAttempts, setShownAttempts] = useState(0);
   const rt = engine.connectors["jira-support"];
   const policy = rt.spec.retry;
-  const taskId = "TASK-429";
+  const taskId = `TASK-${RATE_LIMIT_STATUS}`;
 
   const run = useCallback(async () => {
     setBusy(true);
@@ -195,12 +195,12 @@ function BackoffLab() {
 /* Panel C: hard 400 bouncing into the DLQ */
 function HardFailLab() {
   const reduced = useReducedMotion();
-  const { engine, refresh } = useLab("LAB-400");
+  const { engine, refresh } = useLab(`LAB-${HARD_FAIL_STATUS}`);
   const [busy, setBusy] = useState(false);
   const [steps, setSteps] = useState<{ receive: number; label: string; kind: string }[]>([]);
   const rt = engine.connectors["webhook-crm"];
   const max = rt.spec.queue.maxReceiveCount;
-  const taskId = "TASK-400";
+  const taskId = `TASK-${HARD_FAIL_STATUS}`;
 
   const run = useCallback(async () => {
     setBusy(true);
