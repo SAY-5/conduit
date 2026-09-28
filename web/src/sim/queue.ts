@@ -113,6 +113,15 @@ export class Queue {
     this.messages.length = 0;
     this.redrives.length = 0;
   }
+
+  /** Purge, and restart the message ids and counters, as a freshly created queue has them. */
+  reset(): void {
+    this.purge();
+    this.seq = 0;
+    this.received = 0;
+    this.sent = 0;
+    this.deleted = 0;
+  }
 }
 
 export const arn = (name: string) => `arn:aws:sqs:us-east-1:000000000000:${name}`;

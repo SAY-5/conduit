@@ -22,6 +22,11 @@ export interface FaultSpec {
   fail500Once: boolean;
 }
 
+/** What fakes/common.py answers a rate-limited task with, for its first rate_limit_count calls. */
+export const RATE_LIMIT_STATUS = 429;
+/** What fakes/common.py answers a hard-failed task with, on every call. */
+export const HARD_FAIL_STATUS = 400;
+
 export interface InboxEntry {
   seq: number;
   taskId: string;
@@ -32,14 +37,18 @@ export interface InboxEntry {
   replayed: boolean;
 }
 
+const noFaults = (): FaultSpec => ({ rateLimitTasks: new Set(), rateLimitCount: 2, hardFailTasks: new Set(), fail500Once: false });
+
 /** One FastAPI-style fake: /_inbox, /_faults, and the fault injection of fakes/common.py. */
 export class FakeTarget {
-  faults: FaultSpec = { rateLimitTasks: new Set(), rateLimitCount: 2, hardFailTasks: new Set(), fail500Once: false };
+  faults: FaultSpec = noFaults();
   readonly inbox: InboxEntry[] = [];
   readonly rateLimitHits = new Map<string, number>();
   private fired500 = new Set<string>();
   calls = 0;
   rejected = 0;
+  /** Every response this fake has answered with, counted by HTTP status. */
+  readonly responses = new Map<number, number>();
   /** Simulated wall time per call, seconds. */
   lastLatency = 0;
 
@@ -59,6 +68,16 @@ export class FakeTarget {
     this.inbox.length = 0;
   }
 
+  /** Empty the inbox, drop the faults and zero the counters, as a new fake starts. */
+  reset(): void {
+    this.clearInbox();
+    this.setFaults(noFaults());
+    this.calls = 0;
+    this.rejected = 0;
+    this.responses.clear();
+    this.lastLatency = 0;
+  }
+
   seenKeys(): Set<string> {
     return new Set(this.inbox.map((e) => e.idempotencyKey));
   }
@@ -68,14 +87,14 @@ export class FakeTarget {
     const f = this.faults;
     if (f.hardFailTasks.has(taskId)) {
       this.rejected += 1;
-      return { status: 400, headers: {}, body: { error: "invalid_payload", reason: "hard_fail" } };
+      return { status: HARD_FAIL_STATUS, headers: {}, body: { error: "invalid_payload", reason: "hard_fail" } };
     }
     if (f.rateLimitTasks.has(taskId)) {
       const hits = this.rateLimitHits.get(taskId) ?? 0;
       if (hits < f.rateLimitCount) {
         this.rateLimitHits.set(taskId, hits + 1);
         this.rejected += 1;
-        return { status: 429, headers: { "Retry-After": "0" }, body: { error: "ratelimited", reason: "rate_limited" } };
+        return { status: RATE_LIMIT_STATUS, headers: { "Retry-After": "0" }, body: { error: "ratelimited", reason: "rate_limited" } };
       }
     }
     if (f.fail500Once && !this.fired500.has(taskId)) {
@@ -88,6 +107,12 @@ export class FakeTarget {
 
   /** Handle one request the way the fake app would; dedupes on Idempotency-Key like the webhook receiver. */
   handle(request: RenderedRequest, task: Task, replayed: boolean): FakeResponse {
+    const response = this.answer(request, task, replayed);
+    this.responses.set(response.status, (this.responses.get(response.status) ?? 0) + 1);
+    return response;
+  }
+
+  private answer(request: RenderedRequest, task: Task, replayed: boolean): FakeResponse {
     this.lastLatency = this.rng.uniform(0.0004, 0.0026);
     const fault = this.inject(task.id);
     if (fault) return fault;

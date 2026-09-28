@@ -2,6 +2,7 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Chip, Counter, TYPE_TONE } from "../components/common";
 import { LogStream } from "../components/LogStream";
+import { HARD_FAIL_STATUS, RATE_LIMIT_STATUS } from "../sim/adapters";
 import { DUPLICATES_TOTAL, Engine, JIRA_429_ATTEMPTS, JIRA_RATE_LIMITED_TASKS, MALFORMED_TOTAL, SCENARIO_MESSAGES, UNIQUE_TOTAL, WEBHOOK_HARD_FAIL_TASKS } from "../sim/engine";
 import type { QueueMessage } from "../sim/queue";
 import { useScenario, type ScenarioPhase } from "../sim/useScenario";
@@ -182,8 +183,8 @@ export function Hero() {
               </div>
               <div className="source-card source-faults">
                 <span className="code-label">faults</span>
-                <span className={`fault ${phase === "done" || phase === "replaying" || phase === "idle" ? "fault-off" : ""}`}>jira 429 x{JIRA_429_ATTEMPTS} for {JIRA_RATE_LIMITED_TASKS} tasks</span>
-                <span className={`fault ${phase === "done" || phase === "replaying" || phase === "idle" ? "fault-off" : ""}`}>webhook 400 for {WEBHOOK_HARD_FAIL_TASKS} tasks</span>
+                <span className={`fault ${phase === "done" || phase === "replaying" || phase === "idle" ? "fault-off" : ""}`}>jira {RATE_LIMIT_STATUS} x{JIRA_429_ATTEMPTS} for {JIRA_RATE_LIMITED_TASKS} tasks</span>
+                <span className={`fault ${phase === "done" || phase === "replaying" || phase === "idle" ? "fault-off" : ""}`}>webhook {HARD_FAIL_STATUS} for {WEBHOOK_HARD_FAIL_TASKS} tasks</span>
                 <span className="fault fault-quarantine">{MALFORMED_TOTAL} payloads their schema rejects</span>
               </div>
             </div>
@@ -247,7 +248,7 @@ export function Hero() {
       </div>
       <div className="hero-legend wrap mono">
         <span><i className="particle-swatch particle-ok" aria-hidden /> delivered</span>
-        <span><i className="particle-swatch particle-retry" aria-hidden /> delivered after 429 retries</span>
+        <span><i className="particle-swatch particle-retry" aria-hidden /> delivered after {RATE_LIMIT_STATUS} retries</span>
         <span><i className="particle-swatch particle-dedup" aria-hidden /> deduplicated</span>
         <span><i className="particle-swatch particle-bounce" aria-hidden /> failed, redelivered</span>
         <span><i className="particle-swatch particle-dlq" aria-hidden /> dead-lettered</span>
