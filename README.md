@@ -278,8 +278,8 @@ before any key is claimed; the hard failures dead-letter. It then clears the web
 replays the dead letters, and plans a fourth connector. Output from a real run:
 
 ```
-conduit demo summary (run DC7F4B5, LocalStack at http://localhost:4566)
-measured at commit 7e33d5b, conduit 5.0.1, localstack/localstack:3.8, 2026-09-27
+conduit demo summary (run D930E66, LocalStack at http://localhost:4566)
+measured at commit f008099, conduit 6.0.0, localstack/localstack:3.8, 2026-09-28
 ========================================================================
 tasks submitted        302  (240 unique + 60 duplicate resubmits + 2 malformed)
 deduplicated           60  (must equal duplicates: ok)
@@ -288,14 +288,14 @@ delivered per connector
   slack-ops        80 delivered,  80 unique keys,  20 deduplicated (slack fake inbox)
   webhook-crm      70 delivered,  70 unique keys,  20 deduplicated (webhook fake inbox)
 retried                60  (jira fake returned 429 60 times for 30 tasks)
-  backoff evidence     attempt 1 -> 30 retries, attempt 2 -> 30 retries; delay min/median/max 0.000s / 0.185s / 0.498s (policy base 0.25s x2, cap 8s, full jitter)
+  backoff evidence     attempt 1 -> 30 retries, attempt 2 -> 30 retries; delay min/median/max 0.004s / 0.181s / 0.485s (policy base 0.25s x2, cap 8s, full jitter)
 dead-lettered          10  (must equal hard failures 10: ok); conduit-webhook-crm-dlq after maxReceiveCount=2
   dead letters         0001, 0002, 0003, 0004, 0005, 0006, 0007, 0008, 0009, 0010
 quarantined            2  (must equal malformed payloads 2: ok); held in conduit-<connector>-quarantine, never dead-lettered
   quarantine notes     jira-support/schema: priority enum; webhook-crm/schema: status enum
 DLQ replay             10 replayed after clearing the fault; DLQ now 0; webhook delivered 80/80 in 2.0s
-delivery latency       p50 2.0 ms, p95 449.0 ms (worker attempt-to-ack, n=230)
-end-to-end latency     p50 2.77 s, p95 14.26 s (submit-to-remote-receipt, n=230); queues drained in 19.7s
+delivery latency       p50 1.0 ms, p95 424.8 ms (worker attempt-to-ack, n=230)
+end-to-end latency     p50 3.56 s, p95 14.11 s (submit-to-remote-receipt, n=230); queues drained in 17.3s
 new integration from one file (connectors/pager-oncall.yaml, 8 lines):
   Plan: 8 to add, 0 to change, 0 to destroy.
   + module.connector["pager-oncall"].aws_iam_policy.worker
@@ -310,20 +310,20 @@ new integration from one file (connectors/pager-oncall.yaml, 8 lines):
 conduit ops summary
   connector         queue inflight   dlq  quar  delivered  per min  throttle  breaker  last error
   -----------------------------------------------------------------------------------------------
-  jira-support          0        0     0     1         80     53.1   5.0 tok   closed  quarantined DC7F4B5-jira-support-bad-0001: priority: 'cosmic' is not one of ['low', 'normal', 'high', 'urgent']
-  slack-ops             0        0     0     0         80     49.1   5.0 tok   closed  
-  webhook-crm           0        0     0     1         80     47.6  10.0 tok   closed  permanent DC7F4B5-webhook-crm-0006: HTTP 400: {"error":"injected","reason":"hard_fail"}
+  jira-support          0        0     0     1         80     53.3   5.0 tok   closed  quarantined D930E66-jira-support-bad-0001: priority: 'cosmic' is not one of ['low', 'normal', 'high', 'urgent']
+  slack-ops             0        0     0     0         80     48.3   5.0 tok   closed  
+  webhook-crm           0        0     0     1         80     48.6  10.0 tok   closed  permanent D930E66-webhook-crm-0005: HTTP 400: {"error":"injected","reason":"hard_fail"}
   -----------------------------------------------------------------------------------------------
   total                 0        0     0     2        240
 
 conduit ops costs
   connector              run  objects  sqs req  ddb write  ddb read       usd
   ---------------------------------------------------------------------------
-  jira-support       0ABD63F       80      191        260       100    0.0004
-  slack-ops          14E9CE1       80      129        260       100    0.0004
-  webhook-crm        DC91D81       80      156        300       100    0.0005
+  jira-support       898222C       80      191        260       100    0.0004
+  slack-ops          783AFAB       80      129        260       100    0.0004
+  webhook-crm        C0A62CE       80      155        300       100    0.0005
   ---------------------------------------------------------------------------
-  total                           240      476        820       300    0.0013
+  total                           240      475        820       300    0.0013
   priced at us-east-1 on-demand list: sqs_requests $0.4/M, dynamodb_writes $1.25/M, dynamodb_reads $0.25/M
 ========================================================================
 ```
