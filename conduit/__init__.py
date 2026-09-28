@@ -1,3 +1,3 @@
 """Conduit: a connector kit that syncs tasks to Slack, Jira, and webhooks."""
 
-__version__ = "5.0.1"
+__version__ = "6.0.0"
