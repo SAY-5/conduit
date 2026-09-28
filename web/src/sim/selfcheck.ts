@@ -156,30 +156,62 @@ const NONDETERMINISTIC = ["Math.random", "Date.now", "performance.now", "new Dat
 /** The source of every other module in src/sim, read from disk; null where there is no disk to read. */
 function simSources(): Record<string, string> | null {
   const fs = proc?.getBuiltinModule?.("node:fs") as { readdirSync(dir: string): string[]; readFileSync(file: string, encoding: "utf8"): string } | undefined;
-  const url = proc?.getBuiltinModule?.("node:url") as { fileURLToPath(u: URL): string } | undefined;
-  if (!fs || !url) return null;
-  const dir = url.fileURLToPath(new URL(".", import.meta.url));
+  const url = proc?.getBuiltinModule?.("node:url") as { fileURLToPath(u: string): string } | undefined;
+  const path = proc?.getBuiltinModule?.("node:path") as { dirname(p: string): string; join(...parts: string[]): string } | undefined;
+  if (!fs || !url || !path) return null;
+  const dir = path.dirname(url.fileURLToPath(import.meta.url));
   const sources: Record<string, string> = {};
-  for (const file of fs.readdirSync(dir).sort()) if (file.endsWith(".ts") && file !== "selfcheck.ts") sources[file] = fs.readFileSync(`${dir}${file}`, "utf8");
+  for (const file of fs.readdirSync(dir).sort()) if (file.endsWith(".ts") && file !== "selfcheck.ts") sources[file] = fs.readFileSync(path.join(dir, file), "utf8");
   return sources;
 }
 
-/** Everything a run leaves behind that the page, the summary or a later step can read, hashed. */
-function fingerprint(engine: Engine, summary: Summary): Promise<string> {
-  const connectors = Object.entries(engine.connectors).map(([name, rt]) => ({
-    name,
-    inbox: rt.target.inbox,
-    responses: [...rt.target.responses].sort((x, y) => x[0] - y[0]),
-    stats: rt.worker.stats,
-    queues: [rt.queue, rt.dlq, rt.quarantine].map((q) => [q.name, q.sent, q.received, q.deleted, q.messages.length]),
-  }));
-  return sha256Hex(JSON.stringify({ summary, clock: engine.clock.now(), connectors, store: engine.store.events, log: engine.log }));
+/**
+ * Every value reachable from the engine, as JSON: its clock, the rng's position, the claim store
+ * (items, latest remote ids, events), the log and its sequence, and for each connector the three
+ * queues (messages, redrives, message id sequence, counters), the fake (inbox, faults, fired
+ * faults, rate-limit hits, counters) and the worker (stats, token bucket, breaker), with the specs
+ * they were built from. Functions are left out, and so are the page's listeners, which belong to
+ * the page rather than to the run. A value reached a second time is written as a marker.
+ */
+function stateOf(engine: Engine): string {
+  const seen = new WeakSet<object>();
+  return JSON.stringify(engine, (key, value: unknown) => {
+    if (typeof value === "function" || (key === "listeners" && value instanceof Set)) return undefined;
+    if (value === null || typeof value !== "object") return value;
+    if (seen.has(value)) return "(seen)";
+    seen.add(value);
+    if (value instanceof Map) return { map: [...value] };
+    if (value instanceof Set) return { set: [...value] };
+    return value;
+  });
+}
+
+/** A finished run, hashed: its summary and the engine's whole state. */
+const fingerprint = (engine: Engine, summary: Summary): Promise<string> => sha256Hex(`${JSON.stringify(summary)}\n${stateOf(engine)}`);
+
+/**
+ * Move every part of the engine that reset() restores away from where a new engine starts. A run
+ * moves most of them, but it leaves the breakers closed, the queues empty and the one-shot 500
+ * fault unused, so each connector also gets a tripped breaker, a paused bucket, a message on each
+ * of its queues and a fired 500.
+ */
+async function disturb(engine: Engine): Promise<void> {
+  for (const [name, rt] of Object.entries(engine.connectors)) {
+    const task = makeTask({ id: `${name}-left-behind`, title: "left behind" });
+    const envelope = await engine.envelope(name, task);
+    for (const queue of [rt.queue, rt.dlq, rt.quarantine]) queue.send(envelope);
+    for (let i = 0; i < rt.spec.breaker.failureThreshold; i++) rt.worker.breaker.recordFailure();
+    rt.worker.bucket.penalize(1);
+    rt.target.setFaults({ fail500Once: true });
+    rt.target.handle({ method: "POST", url: rt.spec.target, headers: {}, body: {} }, task, false);
+  }
 }
 
 /**
  * The run replayed from its seed must match it exactly: on a fresh engine and, in Node, on that
- * engine again after the reset "Run the demo again" goes through. Node also reads src/sim and
- * requires that no module names a source of randomness or wall-clock time.
+ * engine again after the reset "Run again" goes through. Node also disturbs that engine, resets it
+ * and requires the state of a new one, and reads src/sim and requires that no module names a
+ * source of randomness or wall-clock time.
  */
 async function reproducibility(engine: Engine, summary: Summary, onScreen: boolean): Promise<Term[]> {
   const seed = engine.runId;
@@ -192,6 +224,9 @@ async function reproducibility(engine: Engine, summary: Summary, onScreen: boole
   if (!inNode) return terms;
   const again = await fingerprint(fresh, await runScenario(fresh));
   terms.push(term(val(printed, name), "=", val(again, "that engine run again")));
+  await disturb(fresh);
+  fresh.reset();
+  terms.push(term(val(await sha256Hex(stateOf(fresh)), "that engine disturbed and reset"), "=", val(await sha256Hex(stateOf(new Engine(seed))), "a new engine")));
   const sources = simSources();
   if (!sources) return [...terms, term(val(false, "src/sim readable"), "=", val(true))];
   const files = Object.keys(sources);
@@ -228,6 +263,14 @@ const README = {
   shippedConnectors: 3,
   jira: { burst: 5, failures: 5, recoverySeconds: 30, retryAfterCap: 120 },
 };
+
+/** A connector's longest retry delay after each attempt that was retried, in attempt order. */
+function longestDelayByAttempt(engine: Engine, name: string): [number, number][] {
+  const { retryAttempts, retryDelays } = engine.connectors[name].worker.stats;
+  const longest = new Map<number, number>();
+  retryAttempts.forEach((attempt, i) => longest.set(attempt, Math.max(longest.get(attempt) ?? 0, retryDelays[i])));
+  return [...longest].sort((a, b) => a[0] - b[0]);
+}
 
 /** The scenario numbers the README prints, checked against the values it prints. */
 async function scenarioLines(finished?: FinishedRun): Promise<CheckLine[]> {
@@ -278,7 +321,8 @@ async function scenarioLines(finished?: FinishedRun): Promise<CheckLine[]> {
     figure("  retry delays", `min ${s.delayMin.toFixed(3)}s, median ${s.delayMedian.toFixed(3)}s, max ${s.delayMax.toFixed(3)}s`),
     line("  jitter within cap",
       term(val(s.delayMin, "shortest delay", "s"), ">=", val(0, "", "s")),
-      term(val(s.delayMax, "longest", "s"), "<=", val(backoffCeiling(JIRA_429_ATTEMPTS, jira.spec.retry), `ceiling after attempt ${JIRA_429_ATTEMPTS}`, "s"))),
+      ...names.flatMap((n) => longestDelayByAttempt(engine, n).map(([attempt, longest]) =>
+        term(val(longest, `${n} after attempt ${attempt} longest`, "s"), "<=", val(backoffCeiling(attempt, engine.connectors[n].spec.retry), "its ceiling", "s"))))),
     line("  Retry-After honoured", term(val(jira.worker.stats.retryAfterHonored, "responses whose Retry-After reached the bucket"), "=", val(rateLimited, `status ${RATE_LIMIT_STATUS} responses`))),
     line("  token bucket waits", term(val(paced, "sends the connector buckets delayed"), "=", val(0))),
     line("  breakers",
