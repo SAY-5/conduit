@@ -40,6 +40,14 @@ YAMLs (jira's burst of 5, its 5/30s breaker, its 120s Retry-After cap, the 255-c
 rule), and both quarantine stages: a payload that fails its source schema and a title that fails
 the webhook connector's `max_length` mapping rule, each landing in quarantine rather than the DLQ.
 
+Every assertion line prints both sides of each comparison it makes, with the relation that holds
+between them, so a line that says `=` is a line that checked it. The idempotency key is compared
+with the digest `conduit/core/idempotency.py` produces for the same input. `run reproducible`
+hashes what a run leaves behind (the summary, the fake inboxes, the worker stats, the claim store
+and the log) and requires the same hash from a fresh engine at the same seed and, in Node, from
+that engine run again after its reset, which is what "Run again" on the page does; Node also fails
+it when any module in `src/sim` names `Math.random`, `Date.now`, `performance.now` or `new Date`.
+
 ## Sections
 
 | id | what it shows |
