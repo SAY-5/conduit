@@ -404,6 +404,20 @@ tests/              unit (respx, moto), integration (LocalStack), terraform (pla
 
 ## Changelog
 
+### v6.0.1
+
+* Dependencies moved past published advisories, with no code change: certifi 2026.7.22 to
+  2026.10.19 (GHSA-6q48-6c7w-9gw2), urllib3 2.7.0 to 2.8.0 (GHSA-8988-9cw3-xx77,
+  GHSA-vxq7-64xx-v4gw, GHSA-gh4c-6fx4-qh6g) and werkzeug 3.1.8 to 3.1.9 (GHSA-g6x2-hccm-hh4m)
+  in `uv.lock`; vite 7.3.6 to 7.3.7 and source-map-js 1.2.1 to 1.2.2 in
+  `web/package-lock.json`. certifi (through httpx) and urllib3 (through botocore) are in the
+  service image; werkzeug comes in only with moto in the dev group, and vite and source-map-js
+  only build the browser demo.
+* The demo block was measured again at the 6.0.1 bump (ef96b48), on a GitHub-hosted runner
+  with 4 CPUs. Every "must equal" check is ok, as in 6.0.0; the latency figures, which depend
+  on the machine, read p95 458.9 ms attempt-to-ack and 14.70 s submit-to-receipt, against
+  424.8 ms and 14.11 s in the 6.0.0 block.
+
 ### v6.0.0
 
 * `Worker` requires `quarantine=`. In v5.0.1 a worker built without one acknowledged a
