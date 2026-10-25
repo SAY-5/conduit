@@ -275,11 +275,12 @@ rejects (a priority outside `schemas/jira-support/v2.yaml`'s enum and a status o
 `schemas/webhook-crm/v1.yaml`'s), while the Jira fake returns 429 for the first two attempts of
 30 tasks and the webhook fake hard-fails 10 tasks with 400. The malformed pair is quarantined
 before any key is claimed; the hard failures dead-letter. It then clears the webhook fault,
-replays the dead letters, and plans a fourth connector. Output from a real run:
+replays the dead letters, and plans a fourth connector. Output from a real run, on a
+GitHub-hosted runner with 4 CPUs ([run 40183244026](https://github.com/SAY-5/conduit/actions/runs/40183244026)):
 
 ```
-conduit demo summary (run D930E66, LocalStack at http://localhost:4566)
-measured at commit f008099, conduit 6.0.0, localstack/localstack:3.8, 2026-09-28
+conduit demo summary (run D884528, LocalStack at http://localhost:4566)
+measured at commit ef96b48, conduit 6.0.1, localstack/localstack:3.8, 2026-10-25
 ========================================================================
 tasks submitted        302  (240 unique + 60 duplicate resubmits + 2 malformed)
 deduplicated           60  (must equal duplicates: ok)
@@ -288,14 +289,14 @@ delivered per connector
   slack-ops        80 delivered,  80 unique keys,  20 deduplicated (slack fake inbox)
   webhook-crm      70 delivered,  70 unique keys,  20 deduplicated (webhook fake inbox)
 retried                60  (jira fake returned 429 60 times for 30 tasks)
-  backoff evidence     attempt 1 -> 30 retries, attempt 2 -> 30 retries; delay min/median/max 0.004s / 0.181s / 0.485s (policy base 0.25s x2, cap 8s, full jitter)
+  backoff evidence     attempt 1 -> 30 retries, attempt 2 -> 30 retries; delay min/median/max 0.007s / 0.207s / 0.493s (policy base 0.25s x2, cap 8s, full jitter)
 dead-lettered          10  (must equal hard failures 10: ok); conduit-webhook-crm-dlq after maxReceiveCount=2
   dead letters         0001, 0002, 0003, 0004, 0005, 0006, 0007, 0008, 0009, 0010
 quarantined            2  (must equal malformed payloads 2: ok); held in conduit-<connector>-quarantine, never dead-lettered
   quarantine notes     jira-support/schema: priority enum; webhook-crm/schema: status enum
 DLQ replay             10 replayed after clearing the fault; DLQ now 0; webhook delivered 80/80 in 2.0s
-delivery latency       p50 1.0 ms, p95 424.8 ms (worker attempt-to-ack, n=230)
-end-to-end latency     p50 3.56 s, p95 14.11 s (submit-to-remote-receipt, n=230); queues drained in 17.3s
+delivery latency       p50 2.0 ms, p95 458.9 ms (worker attempt-to-ack, n=230)
+end-to-end latency     p50 3.13 s, p95 14.70 s (submit-to-remote-receipt, n=230); queues drained in 19.2s
 new integration from one file (connectors/pager-oncall.yaml, 8 lines):
   Plan: 8 to add, 0 to change, 0 to destroy.
   + module.connector["pager-oncall"].aws_iam_policy.worker
@@ -310,20 +311,20 @@ new integration from one file (connectors/pager-oncall.yaml, 8 lines):
 conduit ops summary
   connector         queue inflight   dlq  quar  delivered  per min  throttle  breaker  last error
   -----------------------------------------------------------------------------------------------
-  jira-support          0        0     0     1         80     53.3   5.0 tok   closed  quarantined D930E66-jira-support-bad-0001: priority: 'cosmic' is not one of ['low', 'normal', 'high', 'urgent']
-  slack-ops             0        0     0     0         80     48.3   5.0 tok   closed  
-  webhook-crm           0        0     0     1         80     48.6  10.0 tok   closed  permanent D930E66-webhook-crm-0005: HTTP 400: {"error":"injected","reason":"hard_fail"}
+  jira-support          0        0     0     1         80     43.0   5.0 tok   closed  quarantined D884528-jira-support-bad-0001: priority: 'cosmic' is not one of ['low', 'normal', 'high', 'urgent']
+  slack-ops             0        0     0     0         80     48.2   5.0 tok   closed  
+  webhook-crm           0        0     0     1         80     47.4  10.0 tok   closed  permanent D884528-webhook-crm-0001: HTTP 400: {"error":"injected","reason":"hard_fail"}
   -----------------------------------------------------------------------------------------------
   total                 0        0     0     2        240
 
 conduit ops costs
   connector              run  objects  sqs req  ddb write  ddb read       usd
   ---------------------------------------------------------------------------
-  jira-support       898222C       80      191        260       100    0.0004
-  slack-ops          783AFAB       80      129        260       100    0.0004
-  webhook-crm        C0A62CE       80      155        300       100    0.0005
+  jira-support       CD8E9C4       80      195        260       100    0.0004
+  slack-ops          445898E       80      129        260       100    0.0004
+  webhook-crm        BC29DFA       80      157        300       100    0.0005
   ---------------------------------------------------------------------------
-  total                           240      475        820       300    0.0013
+  total                           240      481        820       300    0.0013
   priced at us-east-1 on-demand list: sqs_requests $0.4/M, dynamodb_writes $1.25/M, dynamodb_reads $0.25/M
 ========================================================================
 ```
@@ -402,6 +403,20 @@ tests/              unit (respx, moto), integration (LocalStack), terraform (pla
 ```
 
 ## Changelog
+
+### v6.0.1
+
+* Dependencies moved past published advisories, with no code change: certifi 2026.7.22 to
+  2026.10.19 (GHSA-6q48-6c7w-9gw2), urllib3 2.7.0 to 2.8.0 (GHSA-8988-9cw3-xx77,
+  GHSA-vxq7-64xx-v4gw, GHSA-gh4c-6fx4-qh6g) and werkzeug 3.1.8 to 3.1.9 (GHSA-g6x2-hccm-hh4m)
+  in `uv.lock`; vite 7.3.6 to 7.3.7 and source-map-js 1.2.1 to 1.2.2 in
+  `web/package-lock.json`. certifi (through httpx) and urllib3 (through botocore) are in the
+  service image; werkzeug comes in only with moto in the dev group, and vite and source-map-js
+  only build the browser demo.
+* The demo block was measured again at the 6.0.1 bump (ef96b48), on a GitHub-hosted runner
+  with 4 CPUs. Every "must equal" check is ok, as in 6.0.0; the latency figures, which depend
+  on the machine, read p95 458.9 ms attempt-to-ack and 14.70 s submit-to-receipt, against
+  424.8 ms and 14.11 s in the 6.0.0 block.
 
 ### v6.0.0
 
